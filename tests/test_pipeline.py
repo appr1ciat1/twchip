@@ -1,0 +1,185 @@
+"""管線整合測試：乾淨資料全數發布；舊專案發生過的每一種錯誤都被擋下；重跑冪等；待辦與告警邏輯正確。"""
+from datetime import date, datetime, timedelta
+
+import pandas as pd
+import pytest
+
+from twchip.config import TPE, Config
+from twchip.pipeline import Pipeline
+from twchip.sources import Parsed
+from tests.synth import Market, trading_days
+
+DAYS = trading_days(date(2026, 3, 2), 12)
+CODES = ["1101", "1102", "6101"]
+
+
+def make(tmp_path, market: Market, faults=None, now=None, broker_faults=None):
+    cfg = Config(data_dir=tmp_path, broker_codes=CODES)
+    faults, broker_faults = faults or {}, broker_faults or {}
+    units = {}
+    for ds in ("quotes", "inst_flows", "foreign_holdings"):
+        for m in ("TWSE", "TPEX"):
+            def fn(d, ds=ds, m=m):
+                f = faults.get((ds, m, d))
+                return f(market) if f else market.parsed(ds, m, d)
+            units[(ds, m)] = fn
+
+    def bfn(code, d):
+        f = broker_faults.get((code, d))
+        return f(market) if f else market.broker(code, d)
+    now = now or (lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=TPE) + timedelta(hours=23))
+    p = Pipeline(cfg, units, bfn, now=now, log=lambda s: None)
+    p.cal.holidays.clear()  # 合成日期不受真實休市表影響
+    return p
+
+
+def status(p, d):
+    return {k: v.get("status") for k, v in p.store.read_quality(d)["units"].items()}
+
+
+def test_clean_run_publishes_everything_and_is_idempotent(tmp_path):
+    mk = Market(DAYS)
+    p = make(tmp_path, mk)
+    p.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+    for d in DAYS:
+        st = status(p, d)
+        assert set(st.values()) == {"published"}, (d, st)
+    assert p.overdue() == []
+    files = sorted((tmp_path / "curated").rglob("*.parquet"))
+    mtimes = [f.stat().st_mtime for f in files]
+    p2 = make(tmp_path, mk)
+    p2.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+    assert [f.stat().st_mtime for f in files] == mtimes   # 第二次全部走快取，不重寫
+    assert {s for d in DAYS for s in status(p2, d).values()} <= {"cached", "published"}
+
+
+def _copy_of(ds, m, other, served=None):
+    """他日資料（舊專案 12/26 = 12/18 的情形）。served 為官方回應自稱的日期。"""
+    def f(mk):
+        src = mk.parsed(ds, m, other)
+        df = src.df.copy()
+        return Parsed(ds, m, df, served, extras=src.extras)
+    return f
+
+
+def test_faults_are_quarantined(tmp_path):
+    mk = Market(DAYS)
+    d5, d6, d7, d8, d9, d10 = DAYS[5:11]
+
+    def dealer_zero(mk):  # 6/15 前的欄位錯抓：自營商全 0，但官方合計仍是真值
+        p = mk.parsed("inst_flows", "TWSE", d6)
+        for c in ("ds_buy", "ds_sell", "ds_net", "dh_buy", "dh_sell", "dh_net", "dealer_buy", "dealer_sell", "dealer_net"):
+            p.df[c] = 0
+        return p
+
+    def ratio_zero(mk):   # TPEX 外資比率「%」解析失敗 → 0
+        p = mk.parsed("foreign_holdings", "TPEX", d7)
+        p.df["foreign_ratio"] = 0.0
+        return p
+
+    def paging(mk):       # 只拿到第一頁
+        p = mk.parsed("inst_flows", "TPEX", d9)
+        p.df = p.df.head(20)
+        p.extras["reported_total"] = 60
+        p.extras["raw_rows"] = 20
+        return p
+
+    faults = {
+        ("inst_flows", "TWSE", d5): _copy_of("inst_flows", "TWSE", DAYS[1], served=d5),   # 標籤正確但內容是他日
+        ("inst_flows", "TWSE", d6): dealer_zero,
+        ("foreign_holdings", "TPEX", d7): ratio_zero,
+        ("foreign_holdings", "TWSE", d8): _copy_of("foreign_holdings", "TWSE", DAYS[7], served=d8),  # 前日快照
+        ("inst_flows", "TPEX", d9): paging,
+        ("quotes", "TPEX", d10): _copy_of("quotes", "TPEX", d10, served=DAYS[9]),          # 官方自稱他日
+    }
+
+    def broker_wrong_date(mk):
+        p = mk.broker("1101", d6)
+        return Parsed("broker_top", None, p.df, DAYS[2], extras=p.extras)
+
+    def broker_bad_footer(mk):
+        p = mk.broker("1102", d6)
+        p.extras["summary"]["total_buy_net_lots"] += 50
+        return p
+
+    def broker_other_volume(mk):  # 佔比對應的是另一天的成交量 → 隱含成交量對不上
+        p = mk.broker("6101", d7)
+        p.df["pct"] = (p.df["pct"] * 1.6).round(2)
+        return p
+
+    bf = {("1101", d6): broker_wrong_date, ("1102", d6): broker_bad_footer, ("6101", d7): broker_other_volume}
+    p = make(tmp_path, mk, faults, broker_faults=bf)
+    p.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+
+    def failed(d, unit):
+        u = p.store.read_quality(d)["units"][unit]
+        return u["status"], {c["id"] for c in u.get("checks", []) if c["status"] == "fail" and c["level"] == "B"}
+
+    st, ids = failed(d5, "inst_flows/TWSE"); assert st == "quarantined" and "F4" in ids, ids
+    st, ids = failed(d6, "inst_flows/TWSE"); assert st == "quarantined" and "F3" in ids, ids
+    st, ids = failed(d7, "foreign_holdings/TPEX"); assert st == "quarantined" and "H1" in ids, ids
+    st, ids = failed(d8, "foreign_holdings/TWSE"); assert st == "quarantined" and "G5" in ids, ids
+    st, ids = failed(d9, "inst_flows/TPEX"); assert st == "quarantined" and "G7" in ids, ids
+    st, ids = failed(d10, "quotes/TPEX"); assert st == "quarantined" and "G1" in ids, ids
+    # 隔離的單位不得出現在 curated；相依它的單位被擋住
+    assert not p.store.has_curated("inst_flows", "TWSE", d5)
+    assert status(p, d5)["foreign_holdings/TWSE"] == "blocked"
+    assert status(p, d10)["inst_flows/TPEX"] == "blocked"
+    # 券商分點：逐檔判定，壞的那檔隔離、其他照常發布
+    stocks6 = p.store.read_quality(d6)["units"]["broker_top/ALL"]["stocks"]
+    t1 = {c["id"] for c in stocks6["1101"]["checks"] if c["status"] == "fail"}
+    t4 = {c["id"] for c in stocks6["1102"]["checks"] if c["status"] == "fail"}
+    assert stocks6["1101"]["status"] == "quarantined" and "T1" in t1
+    assert stocks6["1102"]["status"] == "quarantined" and "T4" in t4
+    assert stocks6["6101"]["status"] == "published"
+    stocks7 = p.store.read_quality(d7)["units"]["broker_top/ALL"]["stocks"]
+    assert "T5" in {c["id"] for c in stocks7["6101"]["checks"] if c["status"] == "fail"}
+    cur6 = p.store.read_curated("broker_top", "ALL", d6)
+    assert set(cur6["code"]) == {"6101"}
+    # 未完成的單位會被 SLA 告警列出
+    issues = p.overdue(lookback_days=30)
+    assert any(str(d5) in i and "inst_flows/TWSE" in i for i in issues)
+
+
+def test_retry_after_fix_publishes(tmp_path):
+    """官方修正後重跑：隔離的單位被重新抓取並發布，隔離檔移除。"""
+    mk = Market(DAYS)
+    d = DAYS[4]
+    p = make(tmp_path, mk, {("inst_flows", "TWSE", d): _copy_of("inst_flows", "TWSE", DAYS[0], served=d)})
+    p.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+    assert status(p, d)["inst_flows/TWSE"] == "quarantined"
+    p2 = make(tmp_path, mk)
+    p2.run(d, d, fetch_holidays=False)
+    assert status(p2, d)["inst_flows/TWSE"] == "published"
+    assert not list((tmp_path / "quarantine" / "inst_flows").rglob(f"{d}.parquet"))
+
+
+def test_not_yet_published_is_pending_not_failure(tmp_path):
+    """官方尚未公布：不報錯、不寫 curated；未超過 SLA 不告警，超過才告警。"""
+    days = DAYS[:3]
+    mk = Market(days[:2])  # 第三天還沒有資料
+    last = days[2]
+    early = lambda: datetime.combine(last, datetime.min.time(), tzinfo=TPE) + timedelta(hours=17)
+    p = make(tmp_path, mk, now=early)
+    p.run(days[0], last, fetch_holidays=False)
+    assert p.store.read_quality(last)["calendar"]["status"] == "expected"
+    assert not any(str(last) in i for i in p.overdue())
+    late = lambda: datetime.combine(last, datetime.min.time(), tzinfo=TPE) + timedelta(hours=40)
+    p2 = make(tmp_path, mk, now=late)
+    p2.run(last, last, fetch_holidays=False)
+    issues = p2.overdue()
+    assert any(str(last) in i for i in issues), issues   # 隔日 16:00 後兩市場皆無 → 推定臨時休市，需人工確認
+
+
+def test_holiday_with_data_is_not_ingested(tmp_path):
+    """休市表上的日期，即使端點回傳他日資料也不寫入（舊專案 5/1 = 5/18 的情形）。"""
+    mk = Market(DAYS)
+    hol = DAYS[3]
+    leak = {(ds, m, hol): _copy_of(ds, m, DAYS[2], served=DAYS[2])
+            for ds in ("quotes", "inst_flows", "foreign_holdings") for m in ("TWSE", "TPEX")}
+    p = make(tmp_path, mk, leak)
+    p.cal.holidays[hol] = "test:假日"
+    p.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+    for ds in ("quotes", "inst_flows", "foreign_holdings"):
+        for m in ("TWSE", "TPEX"):
+            assert not p.store.has_curated(ds, m, hol)

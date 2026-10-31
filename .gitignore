@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+# 資料存在 Hugging Face，不進 git
+data/
+probe-data/
+*.tmp
+.DS_Store

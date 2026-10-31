@@ -1,0 +1,57 @@
+name: daily
+
+# 平日台北 16:17 到隔日 00:17 每小時一次，週六上午補跑一次。
+# 重複執行無害：待辦由資料狀態決定，已發布的單位直接走快取。
+on:
+  schedule:
+    - cron: "17 8-16 * * 1-5"
+    - cron: "17 2 * * 6"
+  workflow_dispatch:
+    inputs:
+      lookback:
+        description: "往回檢查幾個日曆日"
+        default: "10"
+
+concurrency:
+  group: twchip-data          # 同時只能有一個工作在寫資料
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TWCHIP_DATA_DIR: data
+      TWCHIP_HF_REPO: ${{ vars.TWCHIP_HF_REPO }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install .
+
+      - name: 下載近兩年資料（跨表檢查需要前一交易日）
+        run: twchip hf-pull --years $(( $(date -u +%Y) - 1 )) $(date -u +%Y)
+
+      - name: 記錄起始時間（之後只上傳此刻之後變更的檔案）
+        id: start
+        run: echo "ts=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: 抓取、驗證、發布
+        run: twchip run --lookback ${{ inputs.lookback || 10 }}
+
+      - name: 上傳到 Hugging Face（失敗也要上傳原始回應與品質報告）
+        if: always() && steps.start.outputs.ts != ''
+        run: twchip hf-push --since ${{ steps.start.outputs.ts }} --message "daily $(date -u +%F_%H%M)"
+
+      - name: 狀態
+        if: always()
+        run: twchip status --days 10
+
+      - name: SLA 檢查（逾時或需人工確認時讓工作流程失敗，GitHub 會寄信）
+        run: twchip sla

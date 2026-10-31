@@ -1,0 +1,35 @@
+name: probe
+
+# 第一次部署時先跑這個：每個資料源抓一次，印出欄位、解析結果與檢查結果，原始回應存成 artifact。
+# 不寫入 curated、不上傳 Hugging Face。
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "交易日 YYYY-MM-DD（空白 = 今天）"
+        default: ""
+      codes:
+        description: "券商分點測試股票"
+        default: "2330,6488"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TWCHIP_DATA_DIR: probe-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install .
+      - run: twchip probe ${{ inputs.date && format('--date {0}', inputs.date) || '' }} --codes "${{ inputs.codes }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-raw
+          path: probe-data/raw

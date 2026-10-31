@@ -1,0 +1,38 @@
+name: audit
+
+# 每週日：隨機重抓過去 90 天已發布的資料逐列比對，偵測官方或富邦的事後改寫
+#（例如 2026-04 元富併入台新後，富邦改寫了歷史分點名稱）。
+on:
+  schedule:
+    - cron: "41 3 * * 0"
+  workflow_dispatch: {}
+
+concurrency:
+  group: twchip-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TWCHIP_DATA_DIR: data
+      TWCHIP_HF_REPO: ${{ vars.TWCHIP_HF_REPO }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install .
+      - run: twchip hf-pull --years $(( $(date -u +%Y) - 1 )) $(date -u +%Y)
+      - id: start
+        run: echo "ts=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - run: twchip audit --n 12 --days 90
+      - name: 上傳稽核時抓到的原始回應（證據）
+        if: always()
+        run: twchip hf-push --since ${{ steps.start.outputs.ts }} --message "audit $(date -u +%F)"

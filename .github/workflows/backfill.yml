@@ -1,0 +1,59 @@
+name: backfill
+
+# 手動回補。以月為單位執行並逐月上傳，工作逾時也不會遺失已完成的月份。
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "起日 YYYY-MM-DD"
+        required: true
+      end:
+        description: "迄日 YYYY-MM-DD"
+        required: true
+      datasets:
+        description: "空白 = 全部；或 quotes inst_flows foreign_holdings broker_top"
+        default: ""
+
+concurrency:
+  group: twchip-data
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      TWCHIP_DATA_DIR: data
+      TWCHIP_HF_REPO: ${{ vars.TWCHIP_HF_REPO }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install .
+      - run: twchip hf-pull
+      - name: 逐月回補並上傳
+        run: |
+          python - <<'EOF' > months.txt
+          from datetime import date, timedelta
+          s, e = date.fromisoformat("${{ inputs.start }}"), date.fromisoformat("${{ inputs.end }}")
+          cur = s
+          while cur <= e:
+              nxt = (cur.replace(day=1) + timedelta(days=32)).replace(day=1)
+              print(cur, min(nxt - timedelta(days=1), e))
+              cur = nxt
+          EOF
+          while read a b; do
+            ts=$(date +%s)
+            echo "::group::$a ~ $b"
+            twchip backfill "$a" "$b" ${{ inputs.datasets && format('--datasets {0}', inputs.datasets) || '' }} || true
+            twchip hf-push --since "$ts" --message "backfill $a~$b"
+            echo "::endgroup::"
+          done < months.txt
+      - if: always()
+        run: twchip status --days 400
