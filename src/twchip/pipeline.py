@@ -216,6 +216,8 @@ class Pipeline:
                 per[code] = {"status": "error", "detail": str(e)}
                 continue
             summ = p.extras.get("summary", {})
+            if not p.df.empty:
+                summ["implied_vol_lots"] = rules.implied_volume_lots(p.df)
             res = rules.broker_stock(p.df, summ, p.served_date, d, quote, self.cfg.broker_volume_tol) \
                 if not p.df.empty else [bad("T2", "買超、賣超各 ≤ 15 列且非空", "B", "頁面無資料")]
             if prev is not None and not p.df.empty:

@@ -60,6 +60,8 @@ def cmd_probe(cfg: Config, args) -> int:
                 res += rules.quotes(p.df, None)
             elif ds == "inst_flows":
                 res += rules.inst_flows(p.df, quotes.get(m))
+            elif ds == "foreign_holdings":
+                res += rules.foreign_holdings(p.df, None, None, None)
             for r in res:
                 print(f"  {r.status.upper():4} {r.level} {r.id} {r.name}：{r.detail}")
         results[name] = p

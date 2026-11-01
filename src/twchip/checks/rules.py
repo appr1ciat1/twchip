@@ -142,9 +142,10 @@ def inst_flows(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame]) -> list[Chec
     for g in ("fx", "fd", "trust", "ds", "dh"):
         over |= (q[f"{g}_buy"].fillna(0) > q["volume_shares"]) | (q[f"{g}_sell"].fillna(0) > q["volume_shares"])
     rate = float(over.mean()) if len(q) else 0.0
-    # 少數股票可能因鉅額交易等統計口徑差異而超過；整日錯位時會大量超過。以比例判定。
-    out.append((ok if rate <= 0.02 else bad)("F4", "法人買進／賣出 ≤ 當日成交股數", "B",
-               f"{int(over.sum())}/{len(q)} 檔超過（{rate:.2%}，容許 2%）", int(over.sum()),
+    # 少數股票會因統計口徑不同而超過：櫃買行情的成交股數不含盤後定價交易，法人買賣則有含。
+    # 實測 2026-10-30 上櫃 10/917 檔（1.09%）。整日錯位時會大量超過。以比例判定，回補後再依分布校正。
+    out.append((ok if rate <= 0.03 else bad)("F4", "法人買進／賣出 ≤ 當日成交股數", "B",
+               f"{int(over.sum())}/{len(q)} 檔超過（{rate:.2%}，容許 3%）", int(over.sum()),
                _ex(q, over, ["code", "fx_buy", "trust_buy", "volume_shares"])))
     act = j[(j[[f"{g}_net" for g in ("fx", "fd", "trust", "ds", "dh")]].fillna(0) != 0).any(axis=1)]
     miss = act["volume_shares"].isna()
@@ -206,6 +207,16 @@ def foreign_holdings(df: pd.DataFrame, prev: Optional[pd.DataFrame], flows_d: Op
 
 # ---------------------------------------------------------------- broker_top（每檔股票各自判定）
 
+def implied_volume_lots(rows: pd.DataFrame) -> Optional[float]:
+    """由「佔成交比重」反推當日成交張數：|買賣超| ÷ 佔比。取佔比 ≥ 0.5% 的列的中位數，降低捨入誤差。"""
+    r = rows[(rows["pct"].fillna(0) > 0) & rows["net_lots"].notna()] if len(rows) else rows
+    if r is None or len(r) == 0:
+        return None
+    implied = r["net_lots"].abs().astype(float) / r["pct"].astype(float) * 100
+    big = r["pct"].astype(float) >= 0.5
+    return float(implied[big].median()) if big.any() else float(implied.loc[r["pct"].astype(float).idxmax()])
+
+
 def broker_stock(rows: pd.DataFrame, summary: dict, served: Optional[date], d: date,
                  quote: Optional[pd.Series], tol: float) -> list[CheckResult]:
     out = []
@@ -232,23 +243,22 @@ def broker_stock(rows: pd.DataFrame, summary: dict, served: Optional[date], d: d
         out.append((ok if good else bad)("T4", "前 15 名加總 = 頁尾合計（容許捨入）", "B",
                    f"加總 買 {sb}／賣 {ss}；頁尾 買 {fb}／賣 {fs}；容許 ±{tb:.1f}／±{ts:.1f}"))
     if quote is None or pd.isna(quote.get("volume_shares")):
-        out.append(skip("T5", "隱含成交量 = 官方成交量", "B", "無當日行情"))
+        out.append(skip("T5", "隱含成交量 ≈ 官方成交量", "W", "無當日行情"))
         out.append(skip("T6", "平均成本在 [最低, 最高]", "B", "無當日行情"))
     else:
+        # T5 目前是警告：富邦「佔成交比重」的分母與官方成交股數口徑不同（實測 2330 −4.7%、6488 +10.3%），
+        # 且每檔不同。隱含成交量會存進 broker_top_summary，回補後再依各股穩定性訂出阻擋規則。
         vol_lots = float(quote["volume_shares"]) / 1000.0
-        r = rows[(rows["pct"].fillna(0) > 0) & rows["net_lots"].notna()].copy()
-        if r.empty or vol_lots <= 0:
-            out.append(skip("T5", "隱含成交量 = 官方成交量", "B", "無可用佔比"))
+        implied = implied_volume_lots(rows)
+        if implied is None or vol_lots <= 0:
+            out.append(skip("T5", "隱含成交量 ≈ 官方成交量", "W", "無可用佔比"))
         else:
-            r["implied"] = r["net_lots"].abs().astype(float) / r["pct"].astype(float) * 100
-            big = r[r["pct"] >= 0.5]
-            use = big if len(big) else r.nlargest(1, "pct")
-            implied = float(use["implied"].median())
-            # 容許誤差 = 設定值 + 佔比只有兩位小數造成的捨入誤差
-            allow = tol + 0.005 / float(use["pct"].min())
+            pmin = float(rows.loc[rows["pct"].fillna(0) >= 0.5, "pct"].min()) if (rows["pct"].fillna(0) >= 0.5).any() \
+                else float(rows["pct"].max())
+            allow = tol + 0.005 / pmin
             err = abs(implied - vol_lots) / vol_lots
-            out.append((ok if err <= allow else bad)("T5", "隱含成交量 = 官方成交量", "B",
-                       f"隱含 {implied:,.0f} 張，官方 {vol_lots:,.0f} 張，差 {err:.2%}（容許 {allow:.2%}）"))
+            out.append((ok if err <= allow else bad)("T5", "隱含成交量 ≈ 官方成交量", "W",
+                       f"隱含 {implied:,.0f} 張，官方 {vol_lots:,.0f} 張，差 {(implied / vol_lots - 1):+.2%}（容許 {allow:.2%}）"))
         lo, hi = quote.get("low"), quote.get("high")
         bad6 = []
         for k in ("avg_buy_cost", "avg_sell_cost"):

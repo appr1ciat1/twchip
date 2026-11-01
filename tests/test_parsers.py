@@ -155,3 +155,7 @@ def test_fubon_real_page_values():
     res = {r.id: r for r in broker_stock(df, summary, served, date(2026, 10, 21), quote, 0.03)}
     assert res["T4"].status == "pass" and res["T3"].status == "pass" and res["T5"].status == "pass"
     assert res["T7"].status == "pass"
+    # T5 是警告：口徑不同時不擋發布，但仍記錄差距
+    from twchip.checks.rules import implied_volume_lots
+    assert res["T5"].level == "W"
+    assert abs(implied_volume_lots(df) - 24_030) < 150

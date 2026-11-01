@@ -44,6 +44,7 @@ SCHEMAS: dict[str, dict[str, str]] = {
         "date": "date", "code": _S, "n_buy": _I, "n_sell": _I,
         "total_buy_net_lots": _I, "total_sell_net_lots": _I,
         "avg_buy_cost": _F, "avg_sell_cost": _F,
+        "implied_vol_lots": _F,   # 由佔成交比重反推的成交張數（T5 校正用）
     },
     "broker_bsr": {
         "date": "date", "code": _S, "seq": _I, "broker_id": _S, "broker_name": _S,
