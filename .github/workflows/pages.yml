@@ -1,0 +1,51 @@
+name: pages
+
+# daily 或 backfill 結束後（不論成功與否）重新產生網站並部署到 GitHub Pages。
+# 網站只包含已通過驗證的 curated 資料；與資料管線分開，網站壞了不影響資料。
+on:
+  workflow_run:
+    workflows: [daily, backfill]
+    types: [completed]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TWCHIP_DATA_DIR: data
+      TWCHIP_HF_REPO: ${{ vars.TWCHIP_HF_REPO }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      TWCHIP_SITE_BROKER: ${{ vars.TWCHIP_SITE_BROKER || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install .
+      - run: twchip hf-pull --years $(( $(date -u +%Y) - 1 )) $(date -u +%Y)
+      - run: twchip site --out site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

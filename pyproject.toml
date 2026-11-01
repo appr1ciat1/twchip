@@ -18,14 +18,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-app = ["streamlit>=1.36", "plotly>=5.20"]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "playwright>=1.40"]
 
 [project.scripts]
 twchip = "twchip.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+twchip = ["site_template/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -33,26 +33,17 @@
 
 ## 一次性設定
 
-1. 在 GitHub 建立新 repo，把這個目錄推上去。
-2. 在 Hugging Face 建立 **寫入權限** 的 access token。
-3. GitHub repo → Settings → Secrets and variables → Actions：
+1. 在 GitHub 建立 **Public** repo（GitHub 免費方案只有公開 repo 能開 Pages；原始資料仍在私有 Hugging Face）。
+2. Settings → Pages → Source 選 **GitHub Actions**。
+3. 在 Hugging Face 建立 **寫入權限** 的 access token。
+4. Settings → Secrets and variables → Actions：
    - Secret `HF_TOKEN`：上一步的 token
    - Variable `TWCHIP_HF_REPO`：例如 `yourname/twchip-data`（不存在會自動建立為私有）
-4. Actions → **probe** → Run workflow。檢查輸出：每個來源的欄位、解析結果、檢查是否通過。
-   這一步是唯一真正驗證「端點與欄位」的地方，請務必看過再往下。
-5. Actions → **backfill**：起日 `2025-09-11`、迄日今天。逐月回補並上傳。
-6. 本機匯入舊專案資料並比對：
+   - （選用）Variable `TWCHIP_SITE_BROKER` 設為 `0` 可在網站上隱藏券商分點
+5. Actions → **probe** → Run workflow，確認每個資料源的欄位與檢查結果。
+6. Actions → **backfill** 分段回補；每段結束後 **pages** 會自動部署網站。
 
-   ```bash
-   pip install -e ".[app,dev]"
-   export TWCHIP_HF_REPO=yourname/twchip-data HF_TOKEN=...
-   twchip hf-pull
-   twchip legacy-import /path/to/tw-inst-archive
-   twchip legacy-compare
-   twchip hf-push --since 0 --message "legacy import"
-   ```
-
-之後 **daily** 會在平日台北 16:17 到 00:17 每小時執行，**audit** 每週日抽樣重抓比對。
+之後 **daily** 平日每小時執行，**pages** 隨之更新網站，**audit** 每週日抽樣重抓比對，**keepalive** 每月保持 repo 活動。
 
 ## 指令
 
@@ -68,13 +59,20 @@ twchip hf-pull / hf-push --since EPOCH        Hugging Face 同步
 twchip bsr CODE                               證交所日報表人工稽核（需輸入驗證碼）
 ```
 
-## 儀表板
+## 網站（GitHub Pages）
+
+`pages` workflow 把已驗證的資料預先算成 JSON，部署成靜態網站：
+
+- **法人排行**：1／5／10／20／60 日累計買賣超，可依外資、投信、自營、合計或外資持股變化排序，可排除 ETF
+- **個股**：收盤價、三大法人買賣超、外資持股比率、主力進出前 15 名（近 20 日可切換）
+- **券商分點**：以代號識別，列出曾用名稱（券商合併或改名）與每次上榜紀錄
+- **資料健康**：每日各單位發布狀態、各檢查通過率、近期未通過明細、舊資料比對結果
+
+本機預覽：
 
 ```bash
-TWCHIP_DATA_DIR=data streamlit run app/streamlit_app.py
+twchip site --out site && python -m http.server -d site 8000
 ```
-
-分頁：資料健康、三大法人排行、個股、券商分點、檢查結果。只讀已通過驗證的資料。
 
 ## 資料佈局（Hugging Face dataset）
 

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>台股籌碼資料庫</title>
+  <meta name="description" content="三大法人、外資持股、券商分點。每個數字都通過交叉驗證才發布。">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-inner">
+      <a class="brand" href="#rank">台股籌碼資料庫</a>
+      <nav id="nav">
+        <a href="#rank" data-tab="rank">法人排行</a>
+        <a href="#stock" data-tab="stock">個股</a>
+        <a href="#broker" data-tab="broker" id="nav-broker">券商分點</a>
+        <a href="#health" data-tab="health">資料健康</a>
+      </nav>
+      <form id="search" class="search" autocomplete="off">
+        <input id="q" list="stocklist" placeholder="代號或名稱" aria-label="搜尋股票">
+        <datalist id="stocklist"></datalist>
+      </form>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <p id="status" class="status">載入中…</p>
+
+    <!-- 法人排行 -->
+    <section id="tab-rank" class="tab" hidden>
+      <div class="controls">
+        <label>視窗 <select id="r-win"></select></label>
+        <label>法人 <select id="r-who">
+          <option value="total">合計</option><option value="foreign">外資</option>
+          <option value="trust">投信</option><option value="dealer">自營商</option>
+          <option value="foreign_ratio_chg">外資持股變化</option>
+        </select></label>
+        <label>方向 <select id="r-side"><option value="desc">買超／增加</option><option value="asc">賣超／減少</option></select></label>
+        <label>市場 <select id="r-mkt"><option value="">全部</option><option>TWSE</option><option>TPEX</option></select></label>
+        <label class="chk"><input type="checkbox" id="r-etf" checked> 排除 ETF</label>
+      </div>
+      <p id="r-range" class="muted"></p>
+      <div class="table-wrap"><table id="r-table" class="num"></table></div>
+    </section>
+
+    <!-- 個股 -->
+    <section id="tab-stock" class="tab" hidden>
+      <div class="stock-head">
+        <h1 id="s-title">—</h1>
+        <div class="controls">
+          <label>區間 <select id="s-range">
+            <option value="60">60 日</option><option value="120" selected>120 日</option><option value="0">全部</option>
+          </select></label>
+        </div>
+      </div>
+      <div id="s-cards" class="cards"></div>
+      <div class="chart-box"><h3>收盤價</h3><canvas id="c-price"></canvas></div>
+      <div class="chart-box"><h3>三大法人買賣超（張）</h3><canvas id="c-flow"></canvas></div>
+      <div class="chart-box" id="box-fr"><h3>外資持股比率（%）</h3><canvas id="c-fr"></canvas></div>
+      <div id="s-broker" hidden>
+        <div class="row-between">
+          <h3>主力進出前 15 名（張）</h3>
+          <label>日期 <select id="s-bdate"></select></label>
+        </div>
+        <div class="two">
+          <div class="table-wrap"><table id="s-buy" class="num"></table></div>
+          <div class="table-wrap"><table id="s-sell" class="num"></table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 券商分點 -->
+    <section id="tab-broker" class="tab" hidden>
+      <p class="note">只含分點進入追蹤股票前 15 名的日子。沒上榜的日子沒有資料，<b>不是 0</b>。分點以代號識別，名稱取最新一次。</p>
+      <div class="controls"><label>找分點 <input id="b-q" placeholder="名稱或代號"></label></div>
+      <div class="two wide-left">
+        <div class="table-wrap tall"><table id="b-list" class="num clickable"></table></div>
+        <div>
+          <h3 id="b-title">選一個分點</h3>
+          <p id="b-alias" class="muted"></p>
+          <div class="table-wrap tall"><table id="b-rows" class="num"></table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 資料健康 -->
+    <section id="tab-health" class="tab" hidden>
+      <p class="note">每個資料單位每天都要通過驗證閘門才會發布。<span class="pill ok">published</span> 已發布、
+        <span class="pill bad">quarantined</span> 未通過、<span class="pill warn">blocked／pending</span> 等待相依資料或官方尚未公布。</p>
+      <div class="table-wrap"><table id="h-days" class="grid"></table></div>
+      <h3>各項檢查（近 60 日）</h3>
+      <div class="table-wrap"><table id="h-checks" class="num"></table></div>
+      <h3>近期未通過</h3>
+      <div class="table-wrap"><table id="h-fails"></table></div>
+      <div id="h-legacy"></div>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    <span id="built"></span>
+    <span>資料來源：臺灣證券交易所、證券櫃檯買賣中心、富邦 e-Broker。僅供研究，非投資建議。</span>
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>

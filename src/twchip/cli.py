@@ -10,6 +10,7 @@
   twchip hf-pull [--years 2025 2026]            從 Hugging Face 下載
   twchip hf-push --since EPOCH                  上傳該時間後變更的檔案
   twchip audit [--n 10] [--days 90]             隨機重抓過去資料逐列比對（偵測事後改寫）
+  twchip site [--out site]                      產生 GitHub Pages 靜態網站
   twchip bsr CODE                               證交所日報表人工稽核（需輸入驗證碼）
 """
 from __future__ import annotations
@@ -195,6 +196,15 @@ def cmd_audit(cfg: Config, args) -> int:
     return 1 if diffs else 0
 
 
+def cmd_site(cfg: Config, args) -> int:
+    import os
+    from .site import build
+    inc = os.environ.get("TWCHIP_SITE_BROKER", "1") not in ("0", "false", "False")
+    stats = build(cfg, args.out, include_broker=inc)
+    print(f"網站已產生於 {args.out}：{stats['stocks']} 檔股票、{stats['brokers']} 個分點")
+    return 0
+
+
 def cmd_bsr(cfg: Config, args) -> int:
     from .http import Fetcher
     from .rawstore import RawStore
@@ -234,12 +244,13 @@ def main(argv=None) -> int:
     a.add_argument("--message", default="data update")
     a = sub.add_parser("audit"); a.add_argument("--n", type=int, default=10)
     a.add_argument("--days", type=int, default=90); a.add_argument("--seed", type=int, default=None)
+    a = sub.add_parser("site"); a.add_argument("--out", default="site")
     a = sub.add_parser("bsr"); a.add_argument("code"); a.add_argument("--date")
     args = ap.parse_args(argv)
     cfg = Config()
     fn = {"probe": cmd_probe, "run": cmd_run, "backfill": cmd_backfill, "status": cmd_status, "sla": cmd_sla,
           "legacy-import": cmd_legacy_import, "legacy-compare": cmd_legacy_compare, "hf-pull": cmd_hf_pull,
-          "hf-push": cmd_hf_push, "audit": cmd_audit, "bsr": cmd_bsr}[args.cmd]
+          "hf-push": cmd_hf_push, "audit": cmd_audit, "site": cmd_site, "bsr": cmd_bsr}[args.cmd]
     return fn(cfg, args)
 
 
