@@ -34,8 +34,7 @@ class RawStore:
         if not p.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(p.suffix + ".tmp")
-            with gzip.open(tmp, "wb", mtime=0) as f:  # mtime=0：同內容得到同位元組
-                f.write(content)
+            tmp.write_bytes(gzip.compress(content, mtime=0))  # mtime=0：同內容得到同位元組
             tmp.replace(p)
         # 每天一個日誌檔，避免單檔無限成長、每次同步都要重傳。
         log = self.root / "_log" / f"{datetime.now(timezone.utc):%Y-%m-%d}.jsonl"

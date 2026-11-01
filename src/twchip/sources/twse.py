@@ -66,6 +66,8 @@ def fetch_t86(fx: Fetcher, d: date) -> Parsed:
     if j.get("stat") != "OK":
         return _no_data("inst_flows", d, j, resp)
     fields, rows = _rows(j)
+    if not rows:
+        return _no_data("inst_flows", d, j, resp)
     fm = FieldMap(fields, T86_SPEC)
     df = pd.DataFrame({"code": [norm_code(x) for x in fm.col(rows, "code")],
                        "name": [strip_tags(x) for x in fm.col(rows, "name")]})
