@@ -42,6 +42,7 @@
    - （選用）Variable `TWCHIP_SITE_BROKER` 設為 `0` 可在網站上隱藏券商分點
 5. Actions → **probe** → Run workflow，確認每個資料源的欄位與檢查結果。
 6. Actions → **backfill** 分段回補；每段結束後 **pages** 會自動部署網站。
+7. 新增 Variable `TWCHIP_DAILY` = `on`，打開每日排程與每週稽核。在這之前排程只會顯示 skipped。
 
 之後 **daily** 平日每小時執行，**pages** 隨之更新網站，**audit** 每週日抽樣重抓比對，**keepalive** 每月保持 repo 活動。
 

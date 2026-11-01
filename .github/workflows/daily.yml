@@ -21,6 +21,9 @@ permissions:
 
 jobs:
   update:
+    # 開關：repo 的 Variable TWCHIP_DAILY 設為 on 才會依排程執行（手動執行不受限）。
+    # 這樣在 probe 驗證、回補完成之前，排程不會自動跑、也不會寄失敗通知。
+    if: vars.TWCHIP_DAILY == 'on' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:

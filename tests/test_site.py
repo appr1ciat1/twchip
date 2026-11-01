@@ -65,7 +65,10 @@ def test_browser(site):
     errors = []
     try:
         with pw.sync_playwright() as p:
-            b = p.chromium.launch()
+            try:
+                b = p.chromium.launch()
+            except Exception as e:  # noqa: BLE001
+                pytest.skip(f"沒有可用的 Chromium（執行 python -m playwright install chromium）：{e}".splitlines()[0])
             page = b.new_page(viewport={"width": 390, "height": 900})   # 手機寬度
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.on("console", lambda m: m.type == "error" and "cdnjs" not in (m.location or {}).get("url", "")
