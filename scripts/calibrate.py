@@ -65,16 +65,21 @@ def split_name(d):
 
 
 def upper95(k, n):
-    """二項比例的 95% 單尾信賴上界（Clopper–Pearson）。零失敗時約為 3/n。"""
+    """二項比例的 95% 單尾信賴上界（Clopper–Pearson）。零失敗時約為 3/n。
+    以對數空間計算二項分布，n 很大時不會溢位。"""
     if n == 0:
         return np.nan
+    if k >= n:
+        return 1.0
     if k == 0:
         return 1 - 0.05 ** (1 / n)
-    from math import comb
+    from math import lgamma
+    i = np.arange(k + 1)
+    logc = np.array([lgamma(n + 1) - lgamma(j + 1) - lgamma(n - j + 1) for j in i])
     lo, hi = k / n, 1.0
     for _ in range(60):  # 二分法解 P(X ≤ k | p) = 0.05
         mid = (lo + hi) / 2
-        cdf = sum(comb(n, i) * mid ** i * (1 - mid) ** (n - i) for i in range(k + 1))
+        cdf = float(np.exp(logc + i * np.log(mid) + (n - i) * np.log1p(-mid)).sum())
         lo, hi = (mid, hi) if cdf > 0.05 else (lo, mid)
     return hi
 
