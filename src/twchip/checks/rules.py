@@ -16,6 +16,7 @@ FINGERPRINT_COLS = {
     "inst_flows": ["code", "fx_net", "trust_net", "dealer_net"],
     "foreign_holdings": ["code", "foreign_shares", "issued_shares"],
     "broker_top": ["code", "side", "rank", "bhid", "net_lots"],
+    "block_trades": ["code", "price", "volume_shares"],
 }
 
 
@@ -206,6 +207,31 @@ def foreign_holdings(df: pd.DataFrame, prev: Optional[pd.DataFrame], flows_d: Op
     r5 = float((chg["issued_shares"] != chg["issued_shares_p"]).mean()) if len(chg) else 0.0
     out.append((ok if r5 < 0.01 else bad)("H5", "一般股票發行股數變動檔數 < 1%（不含 ETF、存託憑證）", "W",
                f"{r5:.2%}"))
+    return out
+
+
+# ---------------------------------------------------------------- block_trades
+
+def block_trades(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame]) -> list[CheckResult]:
+    out = []
+    if df.empty:
+        return [ok("K0", "當日鉅額交易", "W", "當日無鉅額交易")]
+    m = (df["value_twd"].astype(float) - df["price"].astype(float) * df["volume_shares"].astype(float)).abs() \
+        > np.maximum(1.0, df["value_twd"].astype(float) * 1e-6)
+    out.append((ok if not m.any() else bad)("K1", "成交金額 = 成交價 × 成交股數", "B", f"{int(m.sum())} 列不符",
+               int(m.sum()), _ex(df, m, ["code", "price", "volume_shares", "value_twd"])))
+    if quotes_df is None or quotes_df.empty:
+        out.append(skip("K2", "每檔鉅額成交股數 ≤ 當日成交股數", "B", "無當日行情"))
+        return out
+    agg = df.groupby("code", as_index=False)["volume_shares"].sum()
+    j = agg.merge(quotes_df[["code", "volume_shares"]], on="code", how="left", suffixes=("", "_q"))
+    miss = j["volume_shares_q"].isna()
+    out.append((ok if not miss.any() else bad)("K2", "鉅額交易的股票都有當日行情", "B", f"{int(miss.sum())} 檔缺行情",
+               int(miss.sum()), _ex(j, miss, ["code"])))
+    over = ~miss & (j["volume_shares"] > j["volume_shares_q"])
+    # 證交所每日收盤行情的成交股數包含鉅額交易，所以每檔鉅額股數不可能超過當日成交股數。
+    out.append((ok if not over.any() else bad)("K3", "每檔鉅額成交股數 ≤ 當日成交股數", "B", f"{int(over.sum())} 檔超過",
+               int(over.sum()), _ex(j, over, ["code", "volume_shares", "volume_shares_q"])))
     return out
 
 

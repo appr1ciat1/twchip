@@ -46,6 +46,12 @@ SCHEMAS: dict[str, dict[str, str]] = {
         "avg_buy_cost": _F, "avg_sell_cost": _F,
         "implied_vol_lots": _F,   # 由佔成交比重反推的成交張數（T5 校正用）
     },
+    # 證交所鉅額交易日成交資訊（單一證券）。每筆成交一列；seq 為官方回應中的順序。
+    # 證交所每日收盤行情的成交股數包含鉅額交易，富邦分點頁的佔比分母不含，T5 需扣除。
+    "block_trades": {
+        "date": "date", "market": _S, "code": _S, "name": _S, "seq": _I, "trade_type": _S,
+        "price": _F, "volume_shares": _I, "value_twd": _I,
+    },
     "broker_bsr": {
         "date": "date", "code": _S, "seq": _I, "broker_id": _S, "broker_name": _S,
         "price": _F, "buy_shares": _I, "sell_shares": _I,
@@ -59,10 +65,11 @@ KEYS: dict[str, list[str]] = {
     "broker_top": ["date", "code", "side", "rank"],
     "broker_top_summary": ["date", "code"],
     "broker_bsr": ["date", "code", "seq"],
+    "block_trades": ["date", "market", "code", "seq"],
 }
 
 # 每日管線依此順序處理：後面的資料集的跨表檢查依賴前面的。
-DAILY_DATASETS = ["quotes", "inst_flows", "foreign_holdings", "broker_top"]
+DAILY_DATASETS = ["quotes", "inst_flows", "foreign_holdings", "block_trades", "broker_top"]
 # broker_top_summary 與 broker_top 同頁產生、同進同出。
 COMPANIONS = {"broker_top": ["broker_top_summary"]}
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 
 import pandas as pd
@@ -40,6 +41,12 @@ QUOTE_SPEC = {
     "volume_shares": ["成交股數"], "trades": ["成交筆數"], "value_twd": ["成交金額"],
     "open": ["開盤價"], "high": ["最高價"], "low": ["最低價"], "close": ["收盤價"],
     "sign": ["漲跌(+/-)"], "change_abs": ["漲跌價差"],
+}
+
+
+BLOCK_SPEC = {
+    "code": ["證券代號"], "name": ["證券名稱"], "trade_type": ["交易別"],
+    "price": ["成交價"], "volume_shares": ["成交股數"], "value_twd": ["成交金額"],
 }
 
 
@@ -154,3 +161,31 @@ def fetch_holidays(fx: Fetcher, year: int) -> pd.DataFrame:
         out.append({"date": dd, "name": strip_tags(row[1]) if len(row) > 1 else "",
                     "description": strip_tags(row[2]) if len(row) > 2 else ""})
     return pd.DataFrame(out, columns=["date", "name", "description"])
+
+
+def fetch_block_trades(fx: Fetcher, d: date) -> Parsed:
+    """鉅額交易日成交資訊（單一證券）。selectType 實測不影響回應（2026-11-03）。"""
+    resp = fx.get(f"{BASE}/block/BFIAUU", {"date": ymd(d), "selectType": "S", "response": "json"},
+                  source="twse_bfiauu", d=d, key="single", ext="json")
+    j = _json(resp)
+    tables = j.get("tables") or ([j] if j.get("fields") else [])
+    table = next((t for t in tables if "鉅額交易" in str(t.get("title", "")) and t.get("fields")), None)
+    if j.get("stat") != "OK" or table is None:
+        return _no_data("block_trades", d, j, resp)
+    fields, rows = [str(f) for f in table.get("fields") or []], table.get("data") or []
+    fm = FieldMap(fields, BLOCK_SPEC)
+    df = pd.DataFrame({"code": [norm_code(x) for x in fm.col(rows, "code")],
+                       "name": [strip_tags(x) for x in fm.col(rows, "name")],
+                       "trade_type": [strip_tags(x) for x in fm.col(rows, "trade_type")]})
+    df["price"] = float_series(fm.col(rows, "price"))
+    for c in ("volume_shares", "value_twd"):
+        df[c] = int_series(fm.col(rows, c))
+    df.insert(0, "seq", range(1, len(df) + 1))
+    df.insert(0, "market", "TWSE")
+    df.insert(0, "date", d)
+    served = parse_compact_date(j.get("date"))
+    if served is None:  # 沒有 date 欄位時，改用標題中的民國日期（例：114年09月30日 鉅額交易日成交資訊-單一證券）
+        mt = re.search(r"\d{2,3}年\d{1,2}月\d{1,2}日", str(table.get("title", "")))
+        served = parse_any_date(mt.group()) if mt else None
+    return Parsed("block_trades", "TWSE", df, served, fields=fields,
+                  field_issues=fm.missing, extras={"title": table.get("title")}, raw=[resp.raw])

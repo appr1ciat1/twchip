@@ -159,3 +159,21 @@ def test_fubon_real_page_values():
     from twchip.checks.rules import implied_volume_lots
     assert res["T5"].level == "W"
     assert abs(implied_volume_lots(df) - 24_030) < 150
+
+
+def test_block_trades_real_rows_and_title_date():
+    """欄位與數值取自 2026-11-03 實測回應（2379、2412 於 114/09/30、114/12/29）。"""
+    fields = ["證券代號", "證券名稱", "交易別", "成交價", "成交股數", "成交金額"]
+    j = {"stat": "OK", "tables": [{"title": "114年12月29日 鉅額交易日成交資訊-單一證券", "fields": fields,
+                                   "data": [["2379", "瑞昱", "配對交易", "510.00", "26,043,349", "13,282,107,990"],
+                                            ["2412", "中華電", "配對交易", "134.16", "710,000", "95,253,600"]]}]}
+    d = date(2025, 12, 29)
+    p = twse.fetch_block_trades(FakeFetcher([j]), d)
+    assert p.served_date == d and not p.field_issues
+    assert list(p.df["seq"]) == [1, 2] and int(p.df["volume_shares"].iloc[0]) == 26_043_349
+    assert int(p.df["value_twd"].iloc[0]) == 13_282_107_990
+
+
+def test_block_trades_no_data():
+    p = twse.fetch_block_trades(FakeFetcher([{"stat": "很抱歉，沒有符合條件的資料!"}]), D)
+    assert p.no_data and p.df.empty

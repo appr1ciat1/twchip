@@ -11,7 +11,7 @@ on:
         description: "迄日 YYYY-MM-DD"
         required: true
       datasets:
-        description: "空白 = 全部；或 quotes inst_flows foreign_holdings broker_top"
+        description: "空白 = 全部；或 quotes inst_flows foreign_holdings block_trades broker_top"
         default: ""
       force:
         description: "重新抓取並重新檢查已發布的日期（例如前一日補發布後，要重算 H3）"

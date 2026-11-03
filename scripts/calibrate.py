@@ -131,6 +131,20 @@ def report(name, null, alt, grid, fails_if, unit, margin_ok=None):
 # ------------------------------------------------------------------ T5
 if not summ.empty and summ["implied_vol_lots"].notna().any():
     v = quotes[["date", "code", "volume_shares"]].drop_duplicates(["date", "code"])
+    # 證交所成交股數含鉅額交易、富邦分母不含：有鉅額交易資料的日子先扣除，沒有的日子不納入（不混用口徑）
+    bdir = D / "curated" / "block_trades" / "TWSE"
+    cov = {pd.Timestamp(f.stem).date() for f in bdir.glob("*/*.parquet")} if bdir.exists() else set()
+    if cov:
+        fs = [f for f in sorted(bdir.glob("*/*.parquet"))]
+        bl = pd.concat([pd.read_parquet(f, columns=["date", "code", "volume_shares"]) for f in fs], ignore_index=True)
+        bl["date"] = pd.to_datetime(bl["date"]).dt.date
+        bl = bl.groupby(["date", "code"], as_index=False)["volume_shares"].sum().rename(columns={"volume_shares": "blk"})
+        v = v[v["date"].isin(cov)].merge(bl, on=["date", "code"], how="left")
+        v["volume_shares"] = v["volume_shares"] - v["blk"].fillna(0)
+        v = v.drop(columns="blk")
+        print(f"\n（T5 使用「官方成交股數 − 鉅額交易」；鉅額交易資料涵蓋 {len(cov)} 個交易日）")
+    else:
+        print("\n（沒有鉅額交易資料：T5 使用未扣除的官方成交股數）")
     s = summ.dropna(subset=["implied_vol_lots"]).merge(v, on=["date", "code"])
     s = s[s["volume_shares"] > 0].sort_values(["code", "date"]).copy()
     s["ratio"] = s["implied_vol_lots"] / (s["volume_shares"] / 1000.0)

@@ -249,3 +249,53 @@ def test_waiver_turns_one_blocking_check_into_warning(tmp_path):
     assert st == "published" and c["level"] == "W" and "人工豁免" in c["detail"], c
     st, c = run(0, "b")           # 實際違反筆數 > 記錄值 → 豁免失效
     assert st == "quarantined" and c["level"] == "B", c
+
+
+def test_block_trades_are_subtracted_for_t5(tmp_path):
+    """官方成交股數含鉅額交易、富邦分母不含：扣除鉅額交易後 T5 通過；不扣就失敗。
+    同時測：沒有鉅額交易的日子發布空檔；鉅額股數超過成交股數（K3）會被隔離。"""
+    mk = Market(DAYS)
+    last, k3_day = DAYS[-1], DAYS[-3]
+    X = int(mk.quotes[("TWSE", last)].set_index("code").loc["1101", "volume_shares"] * 0.4)
+
+    def quotes_with_block(m):   # 官方行情：成交股數多了一筆 X 股的鉅額交易
+        p = m.parsed("quotes", "TWSE", last)
+        i = p.df.index[p.df["code"] == "1101"]
+        p.df.loc[i, "value_twd"] += (p.df.loc[i, "close"] * X).astype("int64")
+        p.df.loc[i, "volume_shares"] += X
+        return p
+
+    def block_fn(d):
+        rows = []
+        if d == last:
+            close = float(mk.quotes[("TWSE", last)].set_index("code").loc["1101", "close"])
+            rows = [{"code": "1101", "name": "x", "trade_type": "配對交易", "price": close,
+                     "volume_shares": X, "value_twd": int(round(close * X))}]
+        if d == k3_day:
+            v = int(mk.quotes[("TWSE", d)].set_index("code").loc["1102", "volume_shares"])
+            rows = [{"code": "1102", "name": "y", "trade_type": "配對交易", "price": 10.0,
+                     "volume_shares": v + 1000, "value_twd": (v + 1000) * 10}]
+        if not rows:
+            return Parsed("block_trades", "TWSE", pd.DataFrame(), None, no_data=True, extras={"stat": "很抱歉，沒有符合條件的資料!"})
+        df = pd.DataFrame(rows)
+        df.insert(0, "seq", range(1, len(df) + 1)); df.insert(0, "market", "TWSE"); df.insert(0, "date", d)
+        return Parsed("block_trades", "TWSE", df, d)
+
+    def run(with_block, sub):
+        p = make(tmp_path / sub, mk, {("quotes", "TWSE", last): quotes_with_block})
+        if with_block:
+            p.units[("block_trades", "TWSE")] = block_fn
+        p.cfg.t5_level, p.cfg.t5_rel_tol = "B", 0.03
+        p.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+        return p
+
+    p = run(True, "a")
+    st = p.store.read_quality(last)["units"]["broker_top/ALL"]["stocks"]["1101"]
+    assert st["status"] == "published", st
+    assert p.store.read_quality(DAYS[1])["units"]["block_trades/TWSE"]["status"] == "published"   # 無鉅額 → 空檔
+    u = p.store.read_quality(k3_day)["units"]["block_trades/TWSE"]
+    assert u["status"] == "quarantined" and any(c["id"] == "K3" and c["status"] == "fail" for c in u["checks"])
+
+    p = run(False, "b")
+    st = p.store.read_quality(last)["units"]["broker_top/ALL"]["stocks"]["1101"]
+    assert st["status"] == "quarantined", st

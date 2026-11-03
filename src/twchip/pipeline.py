@@ -20,6 +20,7 @@ from .config import TPE, Config
 from .http import FetchError, Fetcher
 from .rawstore import RawStore
 from .sources import Parsed
+from .schemas import DAILY_DATASETS
 from .store import Store
 
 MARKETS = ("TWSE", "TPEX")
@@ -36,6 +37,7 @@ def default_sources(fx: Fetcher) -> tuple[dict[tuple[str, str], UnitFn], BrokerF
         ("inst_flows", "TPEX"): lambda d: tpex.fetch_daily_trade(fx, d),
         ("foreign_holdings", "TWSE"): lambda d: twse.fetch_mi_qfiis(fx, d),
         ("foreign_holdings", "TPEX"): lambda d: tpex.fetch_qfii(fx, d),
+        ("block_trades", "TWSE"): lambda d: twse.fetch_block_trades(fx, d),
     }
     return units, lambda code, d: fubon.fetch_broker_top(fx, code, d)
 
@@ -85,7 +87,7 @@ class Pipeline:
 
     def run(self, start: date, end: date, datasets: Optional[list[str]] = None, force: bool = False,
             fetch_holidays: bool = True) -> dict[date, dict]:
-        datasets = datasets or ["quotes", "inst_flows", "foreign_holdings", "broker_top"]
+        datasets = datasets or list(DAILY_DATASETS)
         if fetch_holidays:
             self.ensure_holidays(sorted({start.year, end.year}))
         out = {}
@@ -123,6 +125,9 @@ class Pipeline:
             if ds in datasets:
                 for m in MARKETS:
                     units[f"{ds}/{m}"] = self._unit(d, ds, m, force).__dict__
+        # 鉅額交易只有上市；T5 需要它，所以排在券商分點之前
+        if "block_trades" in datasets and ("block_trades", "TWSE") in self.units:
+            units["block_trades/TWSE"] = self._unit(d, "block_trades", "TWSE", force).__dict__
         if "broker_top" in datasets:
             units["broker_top/ALL"] = self._broker(d, force)
         self.store.write_quality(d, rep)
@@ -148,6 +153,11 @@ class Pipeline:
         prev = self.cal.previous_trading_day(d)
         ctx = {"prev": self.store.read_curated(ds, m, prev), "prev_date": prev}
         if ds == "inst_flows":
+            q = self.store.read_curated("quotes", m, d)
+            if q is None:
+                return "quotes 尚未發布", ctx
+            ctx["quotes"] = q
+        if ds == "block_trades":
             q = self.store.read_curated("quotes", m, d)
             if q is None:
                 return "quotes 尚未發布", ctx
@@ -193,14 +203,26 @@ class Pipeline:
             return UnitOutcome("error", str(e))
         raw = [str(r.path) for r in p.raw]
         if p.no_data:
+            # 鉅額交易可能整天都沒有。三個條件都成立才認定為「當日無鉅額交易」：
+            # 官方明確回「沒有符合條件的資料」（不是限流或錯誤）、行情已發布、已過隔日 0 時（報表一定已產生）。
+            stat = str((p.extras or {}).get("stat") or "")
+            if ds == "block_trades" and "沒有符合條件" in stat and \
+                    self.now() >= datetime.combine(d + timedelta(days=1), datetime.min.time(), tzinfo=TPE):
+                self.store.write_curated(ds, m, d, pd.DataFrame(columns=["date", "market", "code", "seq"]))
+                chk = [ok("K0", "當日鉅額交易", "W", f"當日無鉅額交易（官方：{stat}）").to_dict()]
+                return UnitOutcome("published", "當日無鉅額交易", 0, str(p.served_date), chk, raw)
             return UnitOutcome("not_published", "官方回應無資料", served_date=str(p.served_date), raw=raw)
-        res = rules.generic(p, d, ds, self.store.recent_counts(ds, m, d), ctx["prev"])
+        # 鉅額交易每天筆數差異很大（實測 22~92 筆），不做列數檢查（G4）
+        counts = [] if ds == "block_trades" else self.store.recent_counts(ds, m, d)
+        res = rules.generic(p, d, ds, counts, ctx["prev"])
         if ds == "quotes":
             res += rules.quotes(p.df, ctx["prev"])
         elif ds == "inst_flows":
             res += rules.inst_flows(p.df, ctx["quotes"], self.cfg.f4_tol_for(m))
         elif ds == "foreign_holdings":
             res += rules.foreign_holdings(p.df, ctx["prev"], ctx["flows_d"], ctx.get("flows_prev"))
+        elif ds == "block_trades":
+            res += rules.block_trades(p.df, ctx["quotes"])
         res = self._apply_waivers(d, f"{ds}/{m}", res)
         checks = [r.to_dict() for r in res]
         if any_blocking(res):
@@ -224,6 +246,9 @@ class Pipeline:
         qidx = quotes.drop_duplicates("code").set_index("code")
         prev = self.store.read_curated("broker_top", "ALL", self.cal.previous_trading_day(d))
         ref = self._t5_reference(d, quotes)
+        blk = self._block_shares(d)   # None = 當日鉅額交易尚未發布 → T5 只能警告
+        # 沒有設定鉅額交易來源時（例如測試），沿用未扣除的比較
+        use_ref = blk is not None or ("block_trades", "TWSE") not in self.units
         rows, sums, per, quarantine = [], [], {}, []
         for code in self.cfg.broker_codes:
             if code in have or code in exempt:
@@ -241,8 +266,13 @@ class Pipeline:
             summ = p.extras.get("summary", {})
             if not p.df.empty:
                 summ["implied_vol_lots"] = rules.implied_volume_lots(p.df)
-            res = rules.broker_stock(p.df, summ, p.served_date, d, quote, self.cfg.broker_volume_tol,
-                                     ref.get(code), self.cfg.t5_level, self.cfg.t5_rel_tol) \
+            q_adj = quote
+            if blk is not None and code in blk and pd.notna(quote.get("volume_shares")):
+                q_adj = quote.copy()
+                q_adj["volume_shares"] = quote["volume_shares"] - blk[code]
+            res = rules.broker_stock(p.df, summ, p.served_date, d, q_adj, self.cfg.broker_volume_tol,
+                                     ref.get(code) if use_ref else None,
+                                     self.cfg.t5_level, self.cfg.t5_rel_tol) \
                 if not p.df.empty else [bad("T2", "買超、賣超各 ≤ 15 列且非空", "B", "頁面無資料")]
             if prev is not None and not p.df.empty:
                 cols = rules.FINGERPRINT_COLS["broker_top"]
@@ -274,8 +304,18 @@ class Pipeline:
                 "detail": f"完成 {len(have)}，豁免 {len(exempt)}，待處理 {todo}",
                 "stocks": merged_per, "exempt": {c: "當日無成交" for c in exempt}}
 
+    def _block_shares(self, d: date) -> Optional[dict[str, int]]:
+        """當日各股鉅額交易股數合計；鉅額交易尚未發布時回傳 None。"""
+        if ("block_trades", "TWSE") not in self.units or not self.store.has_curated("block_trades", "TWSE", d):
+            return None
+        b = self.store.read_curated("block_trades", "TWSE", d)
+        if b is None or b.empty:
+            return {}
+        return b.groupby("code")["volume_shares"].sum().astype("int64").to_dict()
+
     def _t5_reference(self, d: date, quotes_today: pd.DataFrame) -> dict[str, float]:
-        """各股近 20 個交易日（不含 d）「隱含成交量 ÷ 官方成交量」的中位數；天數不足的股票不列入。"""
+        """各股近 20 個交易日（不含 d）「隱含成交量 ÷（官方成交量 − 鉅額交易）」的中位數。
+        只用鉅額交易已發布的日子，避免扣除與未扣除混在一起；天數不足的股票不列入。"""
         start = d - timedelta(days=45)
         summ = self.store.read_range("broker_top_summary", "ALL", start, d - timedelta(days=1))
         if summ.empty or "implied_vol_lots" not in summ.columns:
@@ -283,6 +323,13 @@ class Pipeline:
         q = self.store.read_range("quotes", None, start, d - timedelta(days=1))
         if q.empty:
             return {}
+        if ("block_trades", "TWSE") in self.units:
+            cov = {x for x in self.store.curated_dates("block_trades", "TWSE") if start <= x < d}
+            b = self.store.read_range("block_trades", "TWSE", start, d - timedelta(days=1))
+            b = (b.groupby(["date", "code"], as_index=False)["volume_shares"].sum().rename(
+                columns={"volume_shares": "blk"}) if not b.empty else pd.DataFrame(columns=["date", "code", "blk"]))
+            q = q[q["date"].isin(cov)].merge(b, on=["date", "code"], how="left")
+            q["volume_shares"] = q["volume_shares"] - q["blk"].fillna(0)
         j = summ.merge(q[["date", "code", "volume_shares"]], on=["date", "code"])
         j = j[j["implied_vol_lots"].notna() & (j["volume_shares"] > 0)]
         j["ratio"] = j["implied_vol_lots"].astype(float) / (j["volume_shares"].astype(float) / 1000.0)
@@ -313,7 +360,7 @@ class Pipeline:
                 continue
             units = self.store.read_quality(d).get("units", {})
             expected = [f"{ds}/{m}" for ds in ("quotes", "inst_flows", "foreign_holdings") for m in MARKETS] + \
-                       ["broker_top/ALL"]
+                       ["broker_top/ALL"] + (["block_trades/TWSE"] if ("block_trades", "TWSE") in self.units else [])
             for u in expected:
                 ds, m = u.split("/")
                 if not self.store.has_curated(ds, m, d) or (u == "broker_top/ALL" and units.get(u, {}).get("status") != "published"):
