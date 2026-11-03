@@ -177,7 +177,7 @@ class Pipeline:
         if ds == "quotes":
             res += rules.quotes(p.df, ctx["prev"])
         elif ds == "inst_flows":
-            res += rules.inst_flows(p.df, ctx["quotes"])
+            res += rules.inst_flows(p.df, ctx["quotes"], self.cfg.f4_tol)
         elif ds == "foreign_holdings":
             res += rules.foreign_holdings(p.df, ctx["prev"], ctx["flows_d"], ctx.get("flows_prev"))
         checks = [r.to_dict() for r in res]
@@ -201,6 +201,7 @@ class Pipeline:
             return {"status": "blocked", "detail": "quotes 尚未發布"}
         qidx = quotes.drop_duplicates("code").set_index("code")
         prev = self.store.read_curated("broker_top", "ALL", self.cal.previous_trading_day(d))
+        ref = self._t5_reference(d, quotes)
         rows, sums, per, quarantine = [], [], {}, []
         for code in self.cfg.broker_codes:
             if code in have or code in exempt:
@@ -218,7 +219,8 @@ class Pipeline:
             summ = p.extras.get("summary", {})
             if not p.df.empty:
                 summ["implied_vol_lots"] = rules.implied_volume_lots(p.df)
-            res = rules.broker_stock(p.df, summ, p.served_date, d, quote, self.cfg.broker_volume_tol) \
+            res = rules.broker_stock(p.df, summ, p.served_date, d, quote, self.cfg.broker_volume_tol,
+                                     ref.get(code), self.cfg.t5_level, self.cfg.t5_rel_tol) \
                 if not p.df.empty else [bad("T2", "買超、賣超各 ≤ 15 列且非空", "B", "頁面無資料")]
             if prev is not None and not p.df.empty:
                 cols = rules.FINGERPRINT_COLS["broker_top"]
@@ -249,6 +251,23 @@ class Pipeline:
         return {"status": "published" if not todo else ("quarantined" if quarantine else "pending"),
                 "detail": f"完成 {len(have)}，豁免 {len(exempt)}，待處理 {todo}",
                 "stocks": merged_per, "exempt": {c: "當日無成交" for c in exempt}}
+
+    def _t5_reference(self, d: date, quotes_today: pd.DataFrame) -> dict[str, float]:
+        """各股近 20 個交易日（不含 d）「隱含成交量 ÷ 官方成交量」的中位數；天數不足的股票不列入。"""
+        start = d - timedelta(days=45)
+        summ = self.store.read_range("broker_top_summary", "ALL", start, d - timedelta(days=1))
+        if summ.empty or "implied_vol_lots" not in summ.columns:
+            return {}
+        q = self.store.read_range("quotes", None, start, d - timedelta(days=1))
+        if q.empty:
+            return {}
+        j = summ.merge(q[["date", "code", "volume_shares"]], on=["date", "code"])
+        j = j[j["implied_vol_lots"].notna() & (j["volume_shares"] > 0)]
+        j["ratio"] = j["implied_vol_lots"].astype(float) / (j["volume_shares"].astype(float) / 1000.0)
+        j = j.sort_values("date").groupby("code").tail(20)
+        g = j.groupby("code")["ratio"].agg(["median", "size"])
+        g = g[g["size"] >= self.cfg.t5_min_history]
+        return g["median"].to_dict()
 
     # ------------------------------------------------------------ 告警
 

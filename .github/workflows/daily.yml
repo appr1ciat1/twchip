@@ -30,6 +30,10 @@ jobs:
       TWCHIP_DATA_DIR: data
       TWCHIP_HF_REPO: ${{ vars.TWCHIP_HF_REPO }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      # 檢查門檻（未設定時用程式預設值）。校正方式見 docs/DESIGN.md §4.5。
+      TWCHIP_T5_LEVEL: ${{ vars.TWCHIP_T5_LEVEL }}
+      TWCHIP_T5_REL_TOL: ${{ vars.TWCHIP_T5_REL_TOL }}
+      TWCHIP_F4_TOL: ${{ vars.TWCHIP_F4_TOL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -183,3 +183,36 @@ def test_holiday_with_data_is_not_ingested(tmp_path):
     for ds in ("quotes", "inst_flows", "foreign_holdings"):
         for m in ("TWSE", "TPEX"):
             assert not p.store.has_curated(ds, m, hol)
+
+
+def test_t5_uses_each_stocks_own_history(tmp_path):
+    """T5 與該股近 20 日比值中位數比較：固定的口徑偏差不報錯；某天突然偏離才擋（等級設為 B 時）。"""
+    mk = Market(DAYS)
+    last = DAYS[-1]
+
+    def biased(code, d, factor):
+        p = mk.broker(code, d)
+        p.df["pct"] = (p.df["pct"] * factor).round(2)
+        return p
+
+    # 6101 每天的佔比都固定偏 +8%（像 6488 那樣的口徑差異）；最後一天 1101 突然偏 +7%
+    bf = {("6101", d): (lambda m, d=d: biased("6101", d, 1 / 1.08)) for d in DAYS}
+    bf[("1101", last)] = lambda m: biased("1101", last, 1 / 1.07)
+    p = make(tmp_path, mk, broker_faults=bf)
+    p.cfg.t5_level, p.cfg.t5_rel_tol, p.cfg.t5_min_history = "B", 0.03, 10
+    p.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+
+    def t5(d, code):
+        st = p.store.read_quality(d)["units"]["broker_top/ALL"]["stocks"][code]
+        return st["status"], next(c for c in st["checks"] if c["id"] == "T5")
+
+    # 前 10 天歷史不足：直接比較、只警告；6101 因固定偏差而「警告未通過」但仍發布
+    st, c = t5(DAYS[2], "6101")
+    assert st == "published" and c["level"] == "W" and c["status"] == "fail"
+    # 有歷史之後：6101 的固定偏差被抵消 → 通過
+    st, c = t5(last, "6101")
+    assert st == "published" and c["status"] == "pass" and "近 20 日" in c["detail"], c
+    # 1101 最後一天突然偏離 7% → T5（B）未通過 → 隔離
+    st, c = t5(last, "1101")
+    assert st == "quarantined" and c["level"] == "B" and c["status"] == "fail", c
+    assert "1101" not in set(p.store.read_curated("broker_top", "ALL", last)["code"])

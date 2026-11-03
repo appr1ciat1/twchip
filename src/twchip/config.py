@@ -36,6 +36,15 @@ class Config:
     sla_hours: float = float(os.environ.get("TWCHIP_SLA_HOURS", "30"))
     # T5：富邦隱含成交量與官方成交量的容許相對誤差。首次 probe 後可依實測校正。
     broker_volume_tol: float = float(os.environ.get("TWCHIP_BROKER_VOLUME_TOL", "0.03"))
+    # 校正用門檻：都可以在 GitHub repo 的 Variables 設定，不必改程式碼。
+    # T5：當日「隱含成交量 ÷ 官方成交量」與該股近 20 個交易日中位數的相對差距上限。
+    t5_rel_tol: float = field(default_factory=lambda: float(os.environ.get("TWCHIP_T5_REL_TOL") or "0.03"))
+    # T5 等級：W（只警告）或 B（阻擋）。依回補分析確認穩定後才改 B。
+    t5_level: str = field(default_factory=lambda: (os.environ.get("TWCHIP_T5_LEVEL") or "W").upper())
+    # 計算 T5 基準所需的最少歷史天數；不足時退回與官方成交量直接比較（僅警告）。
+    t5_min_history: int = field(default_factory=lambda: int(os.environ.get("TWCHIP_T5_MIN_HISTORY") or "10"))
+    # F4：法人買進／賣出超過當日成交股數的檔數比例上限。
+    f4_tol: float = field(default_factory=lambda: float(os.environ.get("TWCHIP_F4_TOL") or "0.03"))
 
     @property
     def raw_dir(self) -> Path:

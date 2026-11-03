@@ -107,7 +107,7 @@ def quotes(df: pd.DataFrame, prev: Optional[pd.DataFrame]) -> list[CheckResult]:
 GROUPS = ["fx", "fd", "foreign", "trust", "ds", "dh", "dealer"]
 
 
-def inst_flows(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame]) -> list[CheckResult]:
+def inst_flows(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame], f4_tol: float = 0.03) -> list[CheckResult]:
     out = []
     bad_rows = pd.Series(False, index=df.index)
     for g in GROUPS:
@@ -144,8 +144,8 @@ def inst_flows(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame]) -> list[Chec
     rate = float(over.mean()) if len(q) else 0.0
     # 少數股票會因統計口徑不同而超過：櫃買行情的成交股數不含盤後定價交易，法人買賣則有含。
     # 實測 2026-10-30 上櫃 10/917 檔（1.09%）。整日錯位時會大量超過。以比例判定，回補後再依分布校正。
-    out.append((ok if rate <= 0.03 else bad)("F4", "法人買進／賣出 ≤ 當日成交股數", "B",
-               f"{int(over.sum())}/{len(q)} 檔超過（{rate:.2%}，容許 3%）", int(over.sum()),
+    out.append((ok if rate <= f4_tol else bad)("F4", "法人買進／賣出 ≤ 當日成交股數", "B",
+               f"{int(over.sum())}/{len(q)} 檔超過（{rate:.2%}，容許 {f4_tol:.0%}）", int(over.sum()),
                _ex(q, over, ["code", "fx_buy", "trust_buy", "volume_shares"])))
     act = j[(j[[f"{g}_net" for g in ("fx", "fd", "trust", "ds", "dh")]].fillna(0) != 0).any(axis=1)]
     miss = act["volume_shares"].isna()
@@ -218,7 +218,9 @@ def implied_volume_lots(rows: pd.DataFrame) -> Optional[float]:
 
 
 def broker_stock(rows: pd.DataFrame, summary: dict, served: Optional[date], d: date,
-                 quote: Optional[pd.Series], tol: float) -> list[CheckResult]:
+                 quote: Optional[pd.Series], tol: float, ref_ratio: Optional[float] = None,
+                 t5_level: str = "W", t5_rel_tol: float = 0.03) -> list[CheckResult]:
+    """ref_ratio：該股近 20 個交易日「隱含成交量 ÷ 官方成交量」的中位數；有它時 T5 改為與自身歷史比較。"""
     out = []
     out.append((ok if served == d else bad)("T1", "最後更新日 = 請求日期", "B", f"頁面 {served}"))
     nb, ns = int((rows["side"] == "buy").sum()), int((rows["side"] == "sell").sum())
@@ -243,22 +245,32 @@ def broker_stock(rows: pd.DataFrame, summary: dict, served: Optional[date], d: d
         out.append((ok if good else bad)("T4", "前 15 名加總 = 頁尾合計（容許捨入）", "B",
                    f"加總 買 {sb}／賣 {ss}；頁尾 買 {fb}／賣 {fs}；容許 ±{tb:.1f}／±{ts:.1f}"))
     if quote is None or pd.isna(quote.get("volume_shares")):
-        out.append(skip("T5", "隱含成交量 ≈ 官方成交量", "W", "無當日行情"))
+        out.append(skip("T5", "隱含成交量與官方成交量一致", "W", "無當日行情"))
         out.append(skip("T6", "平均成本在 [最低, 最高]", "B", "無當日行情"))
     else:
-        # T5 目前是警告：富邦「佔成交比重」的分母與官方成交股數口徑不同（實測 2330 −4.7%、6488 +10.3%），
-        # 且每檔不同。隱含成交量會存進 broker_top_summary，回補後再依各股穩定性訂出阻擋規則。
+        # T5：富邦「佔成交比重」的分母與官方成交股數口徑不同，而且每檔不同（實測 2330 −4.7%、6488 +10.3%）。
+        # 因此有足夠歷史時，比的是「今日比值」與「該股近 20 日比值中位數」，固定的口徑偏差會互相抵消；
+        # 某天突然偏離，代表那天的佔比或成交量對不上（例如抓到他日頁面）。歷史不足時退回直接比較，只警告。
         vol_lots = float(quote["volume_shares"]) / 1000.0
         implied = implied_volume_lots(rows)
         if implied is None or vol_lots <= 0:
-            out.append(skip("T5", "隱含成交量 ≈ 官方成交量", "W", "無可用佔比"))
+            out.append(skip("T5", "隱含成交量與官方成交量一致", "W", "無可用佔比"))
         else:
-            pmin = float(rows.loc[rows["pct"].fillna(0) >= 0.5, "pct"].min()) if (rows["pct"].fillna(0) >= 0.5).any() \
-                else float(rows["pct"].max())
-            allow = tol + 0.005 / pmin
-            err = abs(implied - vol_lots) / vol_lots
-            out.append((ok if err <= allow else bad)("T5", "隱含成交量 ≈ 官方成交量", "W",
-                       f"隱含 {implied:,.0f} 張，官方 {vol_lots:,.0f} 張，差 {(implied / vol_lots - 1):+.2%}（容許 {allow:.2%}）"))
+            big = rows["pct"].fillna(0) >= 0.5
+            pmin = float(rows.loc[big, "pct"].min()) if big.any() else float(rows["pct"].max())
+            rounding = 0.005 / pmin  # 佔比只有兩位小數造成的誤差
+            ratio = implied / vol_lots
+            if ref_ratio is not None and ref_ratio > 0:
+                dev = ratio / ref_ratio - 1
+                allow = t5_rel_tol + rounding
+                out.append((ok if abs(dev) <= allow else bad)(
+                    "T5", "隱含成交量比值與該股近 20 日一致", t5_level,
+                    f"今日比值 {ratio:.4f}，近 20 日中位數 {ref_ratio:.4f}，偏離 {dev:+.2%}（容許 {allow:.2%}）"))
+            else:
+                allow = tol + rounding
+                out.append((ok if abs(ratio - 1) <= allow else bad)(
+                    "T5", "隱含成交量與官方成交量一致（歷史不足，直接比較）", "W",
+                    f"隱含 {implied:,.0f} 張，官方 {vol_lots:,.0f} 張，差 {ratio - 1:+.2%}（容許 {allow:.2%}）"))
         lo, hi = quote.get("low"), quote.get("high")
         bad6 = []
         for k in ("avg_buy_cost", "avg_sell_cost"):
