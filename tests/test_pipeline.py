@@ -226,3 +226,26 @@ def test_f4_tolerance_can_differ_by_market(monkeypatch):
     cfg = Config()
     assert cfg.f4_tol_for("TWSE") == 0.005
     assert cfg.f4_tol_for("TPEX") == 0.03
+
+
+def test_waiver_turns_one_blocking_check_into_warning(tmp_path):
+    """豁免只作用在指定的 (日期, 單位, 檢查)，且違反筆數不得超過記錄值；超過就照樣隔離。"""
+    import json
+    mk = Market(DAYS)
+    d = DAYS[5]
+    fault = {("inst_flows", "TWSE", d): _copy_of("inst_flows", "TWSE", DAYS[1], served=d)}
+
+    def run(max_n_bad, sub):
+        wp = tmp_path / f"w{sub}.json"
+        wp.write_text(json.dumps([{"date": d.isoformat(), "unit": "inst_flows/TWSE", "check": "F4",
+                                   "max_n_bad": max_n_bad, "reason": "測試"}]), encoding="utf-8")
+        p = make(tmp_path / sub, mk, fault)
+        p.cfg.waivers_path = wp
+        p.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+        u = p.store.read_quality(d)["units"]["inst_flows/TWSE"]
+        return u["status"], next(c for c in u["checks"] if c["id"] == "F4")
+
+    st, c = run(10_000, "a")
+    assert st == "published" and c["level"] == "W" and "人工豁免" in c["detail"], c
+    st, c = run(0, "b")           # 實際違反筆數 > 記錄值 → 豁免失效
+    assert st == "quarantined" and c["level"] == "B", c

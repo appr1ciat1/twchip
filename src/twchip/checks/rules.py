@@ -200,8 +200,12 @@ def foreign_holdings(df: pd.DataFrame, prev: Optional[pd.DataFrame], flows_d: Op
                    f"當日 {a_d:.3f}，前一日 {a_p:.3f}"))
     chg = j.merge(prev[["code", "issued_shares"]], on="code").merge(df[["code", "issued_shares"]], on="code",
                                                                       suffixes=("_p", ""))
+    # ETF（00 開頭）與存託憑證（91 開頭）每天申購買回，單位數本來就會變。只看一般股票。
+    # 回補實測：上市每日變動 72~96 檔，其中 70~94 檔是 ETF 或存託憑證，一般股票只有 2~6 檔。
+    chg = chg[~chg["code"].astype(str).str.startswith(("00", "91"))]
     r5 = float((chg["issued_shares"] != chg["issued_shares_p"]).mean()) if len(chg) else 0.0
-    out.append((ok if r5 < 0.01 else bad)("H5", "發行股數變動檔數 < 1%", "W", f"{r5:.2%}"))
+    out.append((ok if r5 < 0.01 else bad)("H5", "一般股票發行股數變動檔數 < 1%（不含 ETF、存託憑證）", "W",
+               f"{r5:.2%}"))
     return out
 
 

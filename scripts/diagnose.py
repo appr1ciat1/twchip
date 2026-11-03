@@ -3,6 +3,8 @@
   A. 2026-09-18 上櫃三大法人為什麼被 F4 隔離？是他日資料，還是當天真的有異常？
   B. 上市 H5（發行股數變動檔數）每天 5~7%：是不是 ETF 每日申購買回造成的？
   C. T5 大幅偏離：官方成交股數是否包含鉅額交易與盤後定價，而富邦的分母不含？
+  D. C 之後仍無法解釋的 4 筆：是否來自「證券組合」鉅額交易？盤後定價的數量單位是股還是張？
+     （D 要指定才會跑：python scripts/diagnose.py ~/twchip-data D）
 
 用法：python scripts/diagnose.py [資料目錄，預設 ~/twchip-data] [A|B|C ...]
 C 會向證交所抓鉅額交易與盤後定價（每個日期 2 次請求，間隔 3.2 秒），約 2~3 分鐘。
@@ -17,9 +19,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ARGS = [a for a in sys.argv[1:] if a not in ("A", "B", "C")]
+ARGS = [a for a in sys.argv[1:] if a not in ("A", "B", "C", "D")]
 D = Path(os.path.expanduser(ARGS[0] if ARGS else "~/twchip-data"))
-PARTS = [a for a in sys.argv[1:] if a in ("A", "B", "C")] or ["A", "B", "C"]
+PARTS = [a for a in sys.argv[1:] if a in ("A", "B", "C", "D")] or ["A", "B", "C"]
 os.environ.setdefault("TWCHIP_DATA_DIR", str(D))
 pd.set_option("display.width", 220)
 pd.set_option("display.max_columns", 30)
@@ -216,3 +218,49 @@ if "C" in PARTS:
     print(f"\n  |ratio − 1| 中位數：{(ok['ratio'] - 1).abs().median():.4f}；"
           f"|adj_ratio − 1| 中位數：{(ok['adj_ratio'] - 1).abs().median():.4f}")
     print("  判讀：若偏離列的 adj_ratio 都接近 1，代表富邦分母 = 一般交易成交量，T5 可改用扣除後的官方量做精確比對。")
+
+# ------------------------------------------------------------------ D
+if "D" in PARTS:
+    print("\n== D. 鉅額交易的各種 selectType，以及盤後定價的原始列")
+    from twchip.config import Config
+    from twchip.http import Fetcher
+    from twchip.rawstore import RawStore
+    from twchip.util import ymd
+    cfg = Config()
+    fx = Fetcher(RawStore(cfg.data_dir), cfg.min_interval)
+    BASE = "https://www.twse.com.tw/rwd/zh"
+    cases = [("2412", date(2025, 9, 30)), ("2330", date(2026, 6, 1)), ("2891", date(2026, 8, 28)),
+             ("2330", date(2026, 9, 1)), ("2379", date(2025, 12, 29))]   # 最後一筆是 C 已解釋的對照
+    for d in sorted({x for _, x in cases}):
+        codes = [c for c, x in cases if x == d]
+        print(f"\n  ---- {d}（{', '.join(codes)}）----")
+        for st in ("S", "P", "C", "T", "A", "ALL", "MS", "SM"):
+            try:
+                r = fx.get(f"{BASE}/block/BFIAUU", {"date": ymd(d), "selectType": st, "response": "json"},
+                           source="twse_diag", d=d, key=f"bfiauu_{st}", ext="json")
+                j = json.loads(r.content.decode("utf-8"))
+            except Exception as e:  # noqa: BLE001
+                print(f"    BFIAUU selectType={st}: 失敗 {e}")
+                continue
+            tabs = j.get("tables") or ([j] if j.get("fields") else [])
+            tabs = [t for t in tabs if t.get("data")]
+            if not tabs:
+                print(f"    BFIAUU selectType={st}: stat={j.get('stat')}")
+                continue
+            for t in tabs:
+                f = [str(x) for x in t["fields"]]
+                hit = [row for row in t["data"] if any(str(c) in [str(v).strip() for v in row] for c in codes)]
+                print(f"    BFIAUU selectType={st}: {t.get('title')}｜{len(t['data'])} 列｜欄位 {f}")
+                for row in hit[:6]:
+                    print("      ", row)
+                if not hit:
+                    print("       （沒有這幾檔）前 2 列：", t["data"][:2])
+        r = fx.get(f"{BASE}/afterTrading/BFT41U", {"date": ymd(d), "selectType": "ALL", "response": "json"},
+                   source="twse_diag", d=d, key="bft41u", ext="json")
+        j = json.loads(r.content.decode("utf-8"))
+        tabs = j.get("tables") or ([j] if j.get("fields") else [])
+        for t in [t for t in tabs if t.get("data")]:
+            print(f"    BFT41U：{t.get('title')}｜欄位 {t['fields']}")
+            for row in t["data"]:
+                if str(row[0]).strip() in codes:
+                    print("      ", row)

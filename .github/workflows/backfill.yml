@@ -13,6 +13,10 @@ on:
       datasets:
         description: "空白 = 全部；或 quotes inst_flows foreign_holdings broker_top"
         default: ""
+      force:
+        description: "重新抓取並重新檢查已發布的日期（例如前一日補發布後，要重算 H3）"
+        type: boolean
+        default: false
 
 concurrency:
   group: twchip-data
@@ -57,7 +61,7 @@ jobs:
           while read a b; do
             ts=$(date +%s)
             echo "::group::$a ~ $b"
-            twchip backfill "$a" "$b" ${{ inputs.datasets && format('--datasets {0}', inputs.datasets) || '' }} || true
+            twchip backfill "$a" "$b" ${{ inputs.datasets && format('--datasets {0}', inputs.datasets) || '' }} ${{ inputs.force && '--force' || '' }} || true
             twchip hf-push --since "$ts" --message "backfill $a~$b"
             echo "::endgroup::"
           done < months.txt

@@ -160,6 +160,27 @@ class Pipeline:
             ctx["flows_prev"] = self.store.read_curated("inst_flows", m, prev)
         return None, ctx
 
+    def _waivers(self) -> list[dict]:
+        if not hasattr(self, "_waiver_cache"):
+            import json
+            p = self.cfg.waivers_path
+            self._waiver_cache = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+        return self._waiver_cache
+
+    def _apply_waivers(self, d: date, unit: str, res: list[CheckResult]) -> list[CheckResult]:
+        """人工豁免：只對清單中指定的 (日期, 單位, 檢查)，且違反筆數不超過記錄值時，把阻擋改成警告。
+        資料若在豁免之後變了（違反筆數變多），豁免自動失效，照樣隔離。"""
+        out = []
+        for r in res:
+            w = next((w for w in self._waivers() if r.blocking_fail and w["date"] == d.isoformat()
+                      and w["unit"] == unit and w["check"] == r.id and r.n_bad <= int(w["max_n_bad"])), None)
+            if w is not None:
+                r = CheckResult(r.id, r.name, "W", r.status, f"{r.detail}［人工豁免：{w['reason']}］",
+                                r.n_bad, r.examples)
+                self.log(f"[{d}] {unit} {r.id} 依豁免清單改為警告：{w['reason']}")
+            out.append(r)
+        return out
+
     def _unit(self, d: date, ds: str, m: str, force: bool) -> UnitOutcome:
         if self.store.has_curated(ds, m, d) and not force:
             return UnitOutcome("cached")
@@ -180,6 +201,7 @@ class Pipeline:
             res += rules.inst_flows(p.df, ctx["quotes"], self.cfg.f4_tol_for(m))
         elif ds == "foreign_holdings":
             res += rules.foreign_holdings(p.df, ctx["prev"], ctx["flows_d"], ctx.get("flows_prev"))
+        res = self._apply_waivers(d, f"{ds}/{m}", res)
         checks = [r.to_dict() for r in res]
         if any_blocking(res):
             self.store.write_quarantine(ds, m, d, p.df)
