@@ -33,6 +33,8 @@ jobs:
       TWCHIP_T5_LEVEL: ${{ vars.TWCHIP_T5_LEVEL }}
       TWCHIP_T5_REL_TOL: ${{ vars.TWCHIP_T5_REL_TOL }}
       TWCHIP_F4_TOL: ${{ vars.TWCHIP_F4_TOL }}
+      TWCHIP_F4_TOL_TWSE: ${{ vars.TWCHIP_F4_TOL_TWSE }}
+      TWCHIP_F4_TOL_TPEX: ${{ vars.TWCHIP_F4_TOL_TPEX }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

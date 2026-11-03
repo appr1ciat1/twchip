@@ -186,7 +186,9 @@ if not flows.empty:
 if not hold.empty and not flows.empty:
     h = hold.sort_values(["mkt", "code", "date"]).copy()
     h["dh"] = h.groupby(["mkt", "code"])["foreign_shares"].diff()
-    h = h.dropna(subset=["dh"])
+    # 只用「前一筆 = 前一個交易日」的變化，與管線一致。前一日被隔離時，跨兩天的變化不算（否則同號率被低估）。
+    h["pd"] = h.groupby(["mkt", "code"])["date"].shift(1)
+    h = h[h["pd"] == h["date"].map(lambda d: shift(d, -1))].dropna(subset=["dh"])
     fn = flows[["date", "mkt", "code", "fnet"]]
 
     def agree(pairs):

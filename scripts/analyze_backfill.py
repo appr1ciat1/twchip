@@ -70,8 +70,12 @@ print(f4.sort_values("rate", ascending=False).head(5).round(4).to_string(index=F
 
 print("\n== 4. H3：外資持股日變化與當日外資買賣超的同號率（每日）")
 h3 = q(f"""
-  with h as (select date, mkt, code, foreign_shares - lag(foreign_shares) over (partition by mkt, code order by date) dh
-             from {src('foreign_holdings')}),
+  with td as (select date, lag(date) over (order by date) ptd from (select distinct date from {src('quotes')})),
+       h0 as (select date, mkt, code,
+                     foreign_shares - lag(foreign_shares) over (partition by mkt, code order by date) dh,
+                     lag(date) over (partition by mkt, code order by date) pd
+              from {src('foreign_holdings')}),
+       h as (select h0.date, mkt, code, dh from h0 join td on h0.date = td.date where h0.pd = td.ptd),
        f as (select date, mkt, code, coalesce(foreign_net, fx_net + fd_net) fn from {src('inst_flows')})
   select h.mkt, h.date::varchar d, avg((sign(dh) = sign(fn))::int) agree, count(*) n
   from h join f using (date, mkt, code) where dh <> 0 and fn <> 0 group by 1, 2""")

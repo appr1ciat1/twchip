@@ -145,7 +145,7 @@ def inst_flows(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame], f4_tol: floa
     # 少數股票會因統計口徑不同而超過：櫃買行情的成交股數不含盤後定價交易，法人買賣則有含。
     # 實測 2026-10-30 上櫃 10/917 檔（1.09%）。整日錯位時會大量超過。以比例判定，回補後再依分布校正。
     out.append((ok if rate <= f4_tol else bad)("F4", "法人買進／賣出 ≤ 當日成交股數", "B",
-               f"{int(over.sum())}/{len(q)} 檔超過（{rate:.2%}，容許 {f4_tol:.0%}）", int(over.sum()),
+               f"{int(over.sum())}/{len(q)} 檔超過（{rate:.2%}，容許 {f4_tol:.1%}）", int(over.sum()),
                _ex(q, over, ["code", "fx_buy", "trust_buy", "volume_shares"])))
     act = j[(j[[f"{g}_net" for g in ("fx", "fd", "trust", "ds", "dh")]].fillna(0) != 0).any(axis=1)]
     miss = act["volume_shares"].isna()

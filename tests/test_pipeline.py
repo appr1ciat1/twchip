@@ -216,3 +216,13 @@ def test_t5_uses_each_stocks_own_history(tmp_path):
     st, c = t5(last, "1101")
     assert st == "quarantined" and c["level"] == "B" and c["status"] == "fail", c
     assert "1101" not in set(p.store.read_curated("broker_top", "ALL", last)["code"])
+
+
+def test_f4_tolerance_can_differ_by_market(monkeypatch):
+    """F4 門檻可依市場設定；未設定（或 GitHub 傳入空字串）時退回 TWCHIP_F4_TOL。"""
+    monkeypatch.setenv("TWCHIP_F4_TOL", "0.03")
+    monkeypatch.setenv("TWCHIP_F4_TOL_TWSE", "0.005")
+    monkeypatch.setenv("TWCHIP_F4_TOL_TPEX", "")
+    cfg = Config()
+    assert cfg.f4_tol_for("TWSE") == 0.005
+    assert cfg.f4_tol_for("TPEX") == 0.03

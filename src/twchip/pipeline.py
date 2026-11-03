@@ -177,7 +177,7 @@ class Pipeline:
         if ds == "quotes":
             res += rules.quotes(p.df, ctx["prev"])
         elif ds == "inst_flows":
-            res += rules.inst_flows(p.df, ctx["quotes"], self.cfg.f4_tol)
+            res += rules.inst_flows(p.df, ctx["quotes"], self.cfg.f4_tol_for(m))
         elif ds == "foreign_holdings":
             res += rules.foreign_holdings(p.df, ctx["prev"], ctx["flows_d"], ctx.get("flows_prev"))
         checks = [r.to_dict() for r in res]

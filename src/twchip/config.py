@@ -46,6 +46,12 @@ class Config:
     # F4：法人買進／賣出超過當日成交股數的檔數比例上限。
     f4_tol: float = field(default_factory=lambda: float(os.environ.get("TWCHIP_F4_TOL") or "0.03"))
 
+    def f4_tol_for(self, market: str) -> float:
+        """F4 門檻可依市場分開設定（TWCHIP_F4_TOL_TWSE、TWCHIP_F4_TOL_TPEX），未設定時用 f4_tol。
+        回補實測：上市 273 天全部是 0；上櫃最高 1.8%（櫃買行情不含盤後定價，法人買賣有含）。"""
+        v = os.environ.get(f"TWCHIP_F4_TOL_{market.upper()}")
+        return float(v) if v else self.f4_tol
+
     @property
     def raw_dir(self) -> Path:
         return self.data_dir / "raw"
