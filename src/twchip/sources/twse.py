@@ -180,6 +180,15 @@ def fetch_block_trades(fx: Fetcher, d: date) -> Parsed:
     df["price"] = float_series(fm.col(rows, "price"))
     for c in ("volume_shares", "value_twd"):
         df[c] = int_series(fm.col(rows, c))
+    # 報表最後一列是「總計」（2026-11-03 回補實測：每天都有）。拿出來當作加總檢查（K4）的官方值，不當成交易。
+    is_total = df["code"].isin(["總計", "合計"])
+    extras = {"title": table.get("title")}
+    if is_total.any():
+        t = df[is_total].iloc[-1]
+        extras["reported_total_shares"] = None if pd.isna(t["volume_shares"]) else int(t["volume_shares"])
+        extras["reported_total_value"] = None if pd.isna(t["value_twd"]) else int(t["value_twd"])
+        extras["total_rows"] = int(is_total.sum())
+    df = df[~is_total].reset_index(drop=True)
     df.insert(0, "seq", range(1, len(df) + 1))
     df.insert(0, "market", "TWSE")
     df.insert(0, "date", d)
@@ -188,4 +197,4 @@ def fetch_block_trades(fx: Fetcher, d: date) -> Parsed:
         mt = re.search(r"\d{2,3}年\d{1,2}月\d{1,2}日", str(table.get("title", "")))
         served = parse_any_date(mt.group()) if mt else None
     return Parsed("block_trades", "TWSE", df, served, fields=fields,
-                  field_issues=fm.missing, extras={"title": table.get("title")}, raw=[resp.raw])
+                  field_issues=fm.missing, extras=extras, raw=[resp.raw])

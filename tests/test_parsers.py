@@ -166,12 +166,20 @@ def test_block_trades_real_rows_and_title_date():
     fields = ["證券代號", "證券名稱", "交易別", "成交價", "成交股數", "成交金額"]
     j = {"stat": "OK", "tables": [{"title": "114年12月29日 鉅額交易日成交資訊-單一證券", "fields": fields,
                                    "data": [["2379", "瑞昱", "配對交易", "510.00", "26,043,349", "13,282,107,990"],
-                                            ["2412", "中華電", "配對交易", "134.16", "710,000", "95,253,600"]]}]}
+                                            ["2412", "中華電", "配對交易", "134.16", "710,000", "95,253,600"],
+                                            ["總計", "", "", "", "26,753,349", "13,377,361,590"]]}]}
     d = date(2025, 12, 29)
     p = twse.fetch_block_trades(FakeFetcher([j]), d)
     assert p.served_date == d and not p.field_issues
     assert list(p.df["seq"]) == [1, 2] and int(p.df["volume_shares"].iloc[0]) == 26_043_349
     assert int(p.df["value_twd"].iloc[0]) == 13_282_107_990
+    assert len(p.df) == 2 and "總計" not in set(p.df["code"])          # 總計列不當成交易
+    assert p.extras["reported_total_shares"] == 26_753_349
+    from twchip.checks import rules
+    res = {r.id: r for r in rules.block_trades(p.df, None, p.extras)}
+    assert res["K4"].status == "pass", res["K4"]
+    p.extras["reported_total_shares"] += 1000                          # 漏抓一筆 → K4 擋下
+    assert {r.id: r for r in rules.block_trades(p.df, None, p.extras)}["K4"].status == "fail"
 
 
 def test_block_trades_no_data():

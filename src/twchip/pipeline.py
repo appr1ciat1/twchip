@@ -222,7 +222,7 @@ class Pipeline:
         elif ds == "foreign_holdings":
             res += rules.foreign_holdings(p.df, ctx["prev"], ctx["flows_d"], ctx.get("flows_prev"))
         elif ds == "block_trades":
-            res += rules.block_trades(p.df, ctx["quotes"])
+            res += rules.block_trades(p.df, ctx["quotes"], p.extras)
         res = self._apply_waivers(d, f"{ds}/{m}", res)
         checks = [r.to_dict() for r in res]
         if any_blocking(res):

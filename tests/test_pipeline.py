@@ -279,7 +279,8 @@ def test_block_trades_are_subtracted_for_t5(tmp_path):
             return Parsed("block_trades", "TWSE", pd.DataFrame(), None, no_data=True, extras={"stat": "很抱歉，沒有符合條件的資料!"})
         df = pd.DataFrame(rows)
         df.insert(0, "seq", range(1, len(df) + 1)); df.insert(0, "market", "TWSE"); df.insert(0, "date", d)
-        return Parsed("block_trades", "TWSE", df, d)
+        return Parsed("block_trades", "TWSE", df, d, extras={
+            "reported_total_shares": int(df["volume_shares"].sum()), "reported_total_value": int(df["value_twd"].sum())})
 
     def run(with_block, sub):
         p = make(tmp_path / sub, mk, {("quotes", "TWSE", last): quotes_with_block})

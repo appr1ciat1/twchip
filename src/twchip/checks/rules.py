@@ -212,10 +212,21 @@ def foreign_holdings(df: pd.DataFrame, prev: Optional[pd.DataFrame], flows_d: Op
 
 # ---------------------------------------------------------------- block_trades
 
-def block_trades(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame]) -> list[CheckResult]:
-    out = []
+def block_trades(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame],
+                 extras: Optional[dict] = None) -> list[CheckResult]:
+    out, extras = [], extras or {}
     if df.empty:
         return [ok("K0", "當日鉅額交易", "W", "當日無鉅額交易")]
+    # K4：各筆加總 = 官方「總計」列。抓到總計列才能確認沒有漏抓或多抓。
+    ts, tv = extras.get("reported_total_shares"), extras.get("reported_total_value")
+    if ts is None or tv is None:
+        why = "總計列缺股數或金額" if extras.get("total_rows") else "回應中沒有總計列"
+        out.append(bad("K4", "各筆加總 = 官方總計", "B", f"{why}，無法確認是否完整"))
+    else:
+        ss, sv = int(df["volume_shares"].sum()), int(df["value_twd"].sum())
+        good = ss == ts and sv == tv and extras.get("total_rows", 1) == 1
+        out.append((ok if good else bad)("K4", "各筆加總 = 官方總計", "B",
+                   f"股數 {ss:,} vs 官方 {ts:,}；金額 {sv:,} vs 官方 {tv:,}"))
     m = (df["value_twd"].astype(float) - df["price"].astype(float) * df["volume_shares"].astype(float)).abs() \
         > np.maximum(1.0, df["value_twd"].astype(float) * 1e-6)
     out.append((ok if not m.any() else bad)("K1", "成交金額 = 成交價 × 成交股數", "B", f"{int(m.sum())} 列不符",
