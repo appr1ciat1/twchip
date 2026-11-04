@@ -178,6 +178,11 @@ def test_block_trades_real_rows_and_title_date():
     from twchip.checks import rules
     res = {r.id: r for r in rules.block_trades(p.df, None, p.extras)}
     assert res["K4"].status == "pass", res["K4"]
+    p.extras["reported_total_value"] += 1                              # 金額差 1 元（2 列，容許 ±1.5）→ 通過
+    assert {r.id: r for r in rules.block_trades(p.df, None, p.extras)}["K4"].status == "pass"
+    p.extras["reported_total_value"] += 1                              # 差 2 元 > 容許 → 擋下
+    assert {r.id: r for r in rules.block_trades(p.df, None, p.extras)}["K4"].status == "fail"
+    p.extras["reported_total_value"] -= 2
     p.extras["reported_total_shares"] += 1000                          # 漏抓一筆 → K4 擋下
     assert {r.id: r for r in rules.block_trades(p.df, None, p.extras)}["K4"].status == "fail"
 

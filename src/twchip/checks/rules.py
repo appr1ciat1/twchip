@@ -224,9 +224,12 @@ def block_trades(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame],
         out.append(bad("K4", "各筆加總 = 官方總計", "B", f"{why}，無法確認是否完整"))
     else:
         ss, sv = int(df["volume_shares"].sum()), int(df["value_twd"].sum())
-        good = ss == ts and sv == tv and extras.get("total_rows", 1) == 1
-        out.append((ok if good else bad)("K4", "各筆加總 = 官方總計", "B",
-                   f"股數 {ss:,} vs 官方 {ts:,}；金額 {sv:,} vs 官方 {tv:,}"))
+        # 股數必須完全相同。金額：官方總計是未四捨五入的金額加總後才取整，各列則各自取整，
+        # 所以差距最多 0.5 元 ×（列數 + 1）（2026-11-04 回補實測：125 天差 1~2 元，股數全部相同）。
+        allow = 0.5 * (len(df) + 1)
+        good = ss == ts and abs(sv - tv) <= allow and extras.get("total_rows", 1) == 1
+        out.append((ok if good else bad)("K4", "各筆加總 = 官方總計（金額容許四捨五入誤差）", "B",
+                   f"股數 {ss:,} vs 官方 {ts:,}；金額 {sv:,} vs 官方 {tv:,}（差 {sv - tv:+,}，容許 ±{allow:g}）"))
     m = (df["value_twd"].astype(float) - df["price"].astype(float) * df["volume_shares"].astype(float)).abs() \
         > np.maximum(1.0, df["value_twd"].astype(float) * 1e-6)
     out.append((ok if not m.any() else bad)("K1", "成交金額 = 成交價 × 成交股數", "B", f"{int(m.sum())} 列不符",
