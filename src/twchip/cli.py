@@ -150,8 +150,14 @@ def cmd_legacy_compare(cfg: Config, args) -> int:
     ps = cfg.quality_dir / "legacy_compare_shift.json"
     if ps.exists():
         print("\n== 不符的列是否為日期錯位：舊資料 D 日的值，等於官方 D+k 日的比例（k=+1 代表舊資料早一天拿到隔日的值）")
-        for ds, st in json.loads(ps.read_text(encoding="utf-8")).items():
+        stats = json.loads(ps.read_text(encoding="utf-8"))
+        bb = stats.pop("broker_top_by_branch", None)
+        for ds, st in stats.items():
             print(f"   {ds}: " + "，".join(f"{k} {v}" for k, v in st.items()))
+        if bb:
+            print("\n== 券商分點改以分點比對（套用由資料推得的代號重編對照，規則見 legacy._broker_by_branch）")
+            for k, v in bb.items():
+                print(f"   {k}: {v}")
     p = cfg.quality_dir / "legacy_compare_rows.parquet"
     if p.exists():
         rows = pd.read_parquet(p)

@@ -63,6 +63,8 @@ def compare(cfg: Config) -> pd.DataFrame:
         if lname == "broker_trades":
             leg = leg.rename(columns={"trade_date": "date", "stock_code": "code"})
             leg["market"] = "ALL"
+            # 一律從原始 broker_id 重新解碼（區分大小寫），不依賴匯入時存下的 bhid
+            leg["bhid"] = leg["broker_id"].fillna("").astype(str).map(decode_b)
         leg["date"] = pd.to_datetime(leg["date"]).dt.date
         usable = leg["quality_action"].isin(["keep", "recompute"]) if "quality_action" in leg else \
             leg.get("quality_flags", pd.Series("", index=leg.index)).fillna("").eq("")
@@ -111,6 +113,8 @@ def compare(cfg: Config) -> pd.DataFrame:
         g.insert(0, "dataset", ds)
         rows.append(g)
         shift_stats[ds] = _shift_explain(o, j[j["diff"]], keys, colmap)
+        if ds == "broker_top":
+            shift_stats["broker_top_by_branch"] = _broker_by_branch(off, leg.loc[usable], j)
         bad = j[j["diff"] | (j["_merge"] == "right_only") | j.get("branch_relabel", False)].copy()
         bad = bad.sort_values("_merge")          # 數值不符（both）排前面，只有舊資料有的排後面
         bad.insert(0, "dataset", ds)
@@ -153,3 +157,48 @@ def _shift_explain(o: pd.DataFrame, mism: pd.DataFrame, keys: list[str], colmap:
             eq &= (a == b).fillna(False)
         out[f"k={k:+d}"] = round(float(eq.sum()) / len(m), 4)
     return out
+
+
+def _broker_by_branch(off: pd.DataFrame, leg: pd.DataFrame, j: pd.DataFrame) -> dict:
+    """券商分點改以「(日期, 股票, 方向, 分點)」比對，並套用由資料推得的代號重編對照。
+
+    依名次比對時，券商合併會讓兩個舊分點併成一個新分點（例：元富 5920 與台新 9B00 的部分歷史 → 9B20），
+    名次因此整串位移，造成大量假差異。這裡改用分點當鍵。
+
+    重編對照的推得規則（不看名稱，只看資料）：
+    1. 候選：依名次對齊時，張數完全相同、只有分點代號不同的列。
+    2. 每個舊代號取最常對到的新代號；需出現 ≥ 5 次，且佔該舊代號候選的 ≥ 90%。
+    3. 舊代號若仍出現在官方資料中（代號沒被淘汰），不視為重編。
+    """
+    off, leg = off.copy(), leg.copy()
+    both = j[j["_merge"] == "both"]
+    same = pd.Series(True, index=both.index)
+    for c in ("buy_lots", "sell_lots", "net_lots"):
+        same &= both[f"{c}__off"].astype("string") == both[f"{c}__leg"].astype("string")
+    cand = both[same & (both["branch__off"].astype(str) != both["branch__leg"].astype(str))]
+    alive = set(off["branch"].astype(str))
+    mapping = {}
+    for old, g in cand.groupby("branch__leg"):
+        vc = g["branch__off"].astype(str).value_counts()
+        if old not in alive and vc.iloc[0] >= 5 and vc.iloc[0] / vc.sum() >= 0.9:
+            mapping[str(old)] = vc.index[0]
+    lg = leg.copy()
+    lg["branch"] = lg["bhid"].astype(str).map(lambda c: mapping.get(c, c))
+    for d in (lg, off):
+        d["date"] = d["date"].astype(str)
+        d["code"] = d["code"].astype(str)
+    k = ["date", "code", "side", "branch"]
+    la = lg.groupby(k, as_index=False).agg(buy_leg=("buy_vol", "sum"), sell_leg=("sell_vol", "sum"))
+    common = set(off["date"]) & set(la["date"])
+    oo = off[off["date"].isin(common)][k + ["buy_lots", "sell_lots"]]
+    la = la[la["date"].isin(common)]
+    m = oo.merge(la, on=k, how="outer", indicator=True)
+    bb = m[m["_merge"] == "both"]
+    eq = (bb["buy_lots"].astype("Int64") == bb["buy_leg"].astype("Int64")) & \
+         (bb["sell_lots"].astype("Int64") == bb["sell_leg"].astype("Int64"))
+    bad = bb[~eq.fillna(False)]
+    return {"relabel_map_size": len(mapping), "relabel_map_sample": dict(list(sorted(mapping.items()))[:12]),
+            "both": int(len(bb)), "equal": int(eq.fillna(False).sum()), "unequal": int(len(bad)),
+            "unequal_dates": bad["date"].value_counts().head(10).to_dict(),
+            "only_official": int((m["_merge"] == "left_only").sum()),
+            "only_legacy": int((m["_merge"] == "right_only").sum())}

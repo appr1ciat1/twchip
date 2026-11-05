@@ -76,6 +76,9 @@ def test_compare_broker_branch_and_date_shift(tmp_path):
     res = compare(cfg)
     t = res[res["dataset"] == "broker_top"]
     assert int(t["mismatched"].sum()) == 0 and int(t["both"].sum()) >= 600
+    import json as _j
+    bb = _j.loads((cfg.quality_dir / "legacy_compare_shift.json").read_text(encoding="utf-8"))["broker_top_by_branch"]
+    assert bb["unequal"] == 0 and bb["equal"] > 500 and bb["only_legacy"] == 0, bb
 
     # 舊資料日期錯位：把官方 10/30 的三大法人換成「舊資料 10/29 的值」→ 舊資料 10/29 等於官方 10/30（k=+1）
     leg = pd.read_parquet(cfg.legacy_dir / "flows.parquet")
