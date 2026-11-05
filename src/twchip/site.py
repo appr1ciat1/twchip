@@ -6,7 +6,7 @@
   data/stocks.json        代號、名稱、市場（搜尋用）
   data/rank_{w}.json      w 日累計三大法人買賣超（張）＋外資持股變化＋區間漲跌
   data/stock/{code}.json  個股時序與券商分點
-  data/broker/index.json, data/broker/{bhid}.json
+  data/broker/index.json, data/broker/{分點鍵}.json（以分點分組；鍵見 fubon.branch_key）
   data/health.json        每日發布狀態、檢查通過率、近期失敗
 
 只讀 curated（通過驗證的資料）。數字單位一律在 JSON 的 fields 中標明。
@@ -23,6 +23,7 @@ import duckdb
 import pandas as pd
 
 from .config import TPE, Config
+from .sources.fubon import branch_id, branch_key
 
 WINDOWS = [1, 5, 10, 20, 60]
 QUALITY_DAYS = 60
@@ -150,6 +151,9 @@ def build(cfg: Config, out: Path, include_broker: bool = True) -> dict:
         m = m.merge(hd, on=["code", "market", "date"], how="left")
     bt = _df(con, "select * from broker_top order by date, code, side, rank") \
         if include_broker and "broker_top" in have else pd.DataFrame()
+    if not bt.empty:
+        bt["branch"] = [branch_id(b, h) for b, h in zip(bt["broker_b"].fillna(""), bt["bhid"].fillna(""))]
+        bt["key"] = bt["branch"].map(branch_key)
     bt_by = dict(tuple(bt.groupby("code"))) if not bt.empty else {}
     names = dict(zip(stocks["code"], stocks["name"]))
     keep = set(stocks["code"])
@@ -169,32 +173,34 @@ def build(cfg: Config, out: Path, include_broker: bool = True) -> dict:
             b = bt_by[code]
             recent = sorted(b["date"].unique())[-20:]
             doc["broker"] = {
-                "fields": ["rank", "broker_name", "bhid", "buy_lots", "sell_lots", "net_lots", "pct"],
+                "fields": ["rank", "broker_name", "key", "buy_lots", "sell_lots", "net_lots", "pct"],
                 "days": {str(d): {s: b[(b["date"] == d) & (b["side"] == s)][
-                    ["rank", "broker_name", "bhid", "buy_lots", "sell_lots", "net_lots", "pct"]]
+                    ["rank", "broker_name", "key", "buy_lots", "sell_lots", "net_lots", "pct"]]
                     .astype(object).where(lambda x: x.notna(), None).values.tolist() for s in ("buy", "sell")}
                     for d in recent}}
         _dump(doc, out / "data" / "stock" / f"{code}.json")
         stats["stocks"] += 1
 
-    # ---------- 券商分點
+    # ---------- 券商分點：以「分點」分組（富邦連結的 b 參數，區分大小寫），不是以總公司（BHID）分組
     if not bt.empty:
-        idx = bt.groupby("bhid").agg(name=("broker_name", "last"), names=("broker_name", lambda s: sorted(set(s))),
-                                     appearances=("rank", "size"), stocks=("code", "nunique"),
-                                     net=("net_lots", "sum"), first=("date", "min"), last=("date", "max")).reset_index()
-        idx = idx[idx["bhid"].astype(str) != ""]
-        _dump({"fields": ["bhid", "name", "aliases", "appearances", "stocks", "net_lots", "first", "last"],
+        idx = bt.groupby("branch").agg(hq=("bhid", "last"), name=("broker_name", "last"),
+                                       names=("broker_name", lambda s: sorted(set(s))),
+                                       appearances=("rank", "size"), stocks=("code", "nunique"),
+                                       net=("net_lots", "sum"), first=("date", "min"), last=("date", "max")).reset_index()
+        idx = idx[idx["branch"].astype(str) != ""]
+        _dump({"fields": ["key", "branch", "hq", "name", "aliases", "appearances", "stocks", "net_lots", "first", "last"],
                "tracked_codes": cfg.broker_codes,
-               "rows": [[r.bhid, r.name, [n for n in r.names if n != r.name], int(r.appearances), int(r.stocks),
-                         int(r.net), str(r.first), str(r.last)] for r in idx.itertuples()]},
+               "rows": [[branch_key(r.branch), r.branch, r.hq, r.name, [n for n in r.names if n != r.name],
+                         int(r.appearances), int(r.stocks), int(r.net), str(r.first), str(r.last)]
+                        for r in idx.itertuples()]},
               out / "data" / "broker" / "index.json")
-        for bhid, g in bt.groupby("bhid"):
-            if not str(bhid):
+        for br, g in bt.groupby("branch"):
+            if not str(br):
                 continue
-            _dump({"bhid": bhid, "fields": ["date", "code", "name", "side", "rank", "net_lots", "pct"],
+            _dump({"branch": br, "fields": ["date", "code", "name", "side", "rank", "net_lots", "pct"],
                    "rows": [[str(r.date), r.code, names.get(r.code, ""), r.side, int(r.rank), _num(r.net_lots),
                              _num(r.pct, 2)] for r in g.sort_values(["date", "code"]).itertuples()]},
-                  out / "data" / "broker" / f"{bhid}.json")
+                  out / "data" / "broker" / f"{branch_key(br)}.json")
             stats["brokers"] += 1
 
     _dump({"built_at": datetime.now(TPE).isoformat(), "latest": latest, "first": days[0],

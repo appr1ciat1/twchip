@@ -27,7 +27,7 @@ def make(tmp_path, market: Market, faults=None, now=None, broker_faults=None):
     def bfn(code, d):
         f = broker_faults.get((code, d))
         return f(market) if f else market.broker(code, d)
-    now = now or (lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=TPE) + timedelta(hours=23))
+    now = now or (lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=TPE) + timedelta(hours=25))
     p = Pipeline(cfg, units, bfn, now=now, log=lambda s: None)
     p.cal.holidays.clear()  # 合成日期不受真實休市表影響
     return p
@@ -313,3 +313,20 @@ def test_rerun_keeps_original_check_details(tmp_path):
     p2.run(DAYS[0], DAYS[-1], fetch_holidays=False)
     after = p2.store.read_quality(DAYS[5])["units"]["inst_flows/TWSE"]
     assert after["status"] == "published" and after["checks"] == before["checks"] and "last_seen_cached" in after
+
+
+
+def test_tpex_holdings_wait_until_settled(tmp_path):
+    """上櫃外資持股當晚可能是未定稿數字：交易日隔天 0 時前不抓，之後才發布；上市不受影響。"""
+    mk = Market(DAYS)
+    last = DAYS[-1]
+    evening = lambda: datetime.combine(last, datetime.min.time(), tzinfo=TPE) + timedelta(hours=21)
+    p = make(tmp_path, mk, now=evening)
+    p.run(DAYS[0], last, fetch_holidays=False)
+    st = status(p, last)
+    assert st["foreign_holdings/TPEX"] == "not_published" and st["foreign_holdings/TWSE"] == "published", st
+    assert "等待官方定稿" in p.store.read_quality(last)["units"]["foreign_holdings/TPEX"]["detail"]
+    assert not any("foreign_holdings/TPEX" in i for i in p.overdue())      # 未超過 SLA，不告警
+    p2 = make(tmp_path, mk)                                                  # 隔天 01:00
+    p2.run(last, last, fetch_holidays=False)
+    assert status(p2, last)["foreign_holdings/TPEX"] == "published"

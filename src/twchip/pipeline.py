@@ -203,6 +203,11 @@ class Pipeline:
     def _unit(self, d: date, ds: str, m: str, force: bool) -> UnitOutcome:
         if self.store.has_curated(ds, m, d) and not force:
             return UnitOutcome("cached")
+        wait = self.cfg.settle_hours.get((ds, m))
+        if wait is not None:
+            ready = datetime.combine(d, datetime.min.time(), tzinfo=TPE) + timedelta(hours=wait)
+            if self.now() < ready:
+                return UnitOutcome("not_published", f"等待官方定稿：{ready:%Y-%m-%d %H:%M} 之後才抓")
         missing, ctx = self._deps(d, ds, m)
         if missing:
             return UnitOutcome("blocked", missing)

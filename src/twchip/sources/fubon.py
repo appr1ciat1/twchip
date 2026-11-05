@@ -26,12 +26,14 @@ _FOOTER = {
 
 
 def decode_b(b: str) -> str:
-    """MoneyDJ 把含英文字母的分點代號編成 UTF-16 十六進位，例如 0039004100300030 → 9A00。"""
+    """MoneyDJ 把含英文字母的分點代號編成 UTF-16 十六進位，例如 0039004100300030 → 9A00。
+    分點代號區分大小寫：918G（群益金鼎-新莊）與 918g（群益金鼎-大甲）是不同分點，不可轉大寫。
+    （2026-11-05 實測：轉大寫會讓 820 個分點撞成 756 個。）"""
     if re.fullmatch(r"(?:[0-9a-fA-F]{4}){2,}", b or "") and len(b) % 4 == 0 and len(b) >= 8:
         try:
             s = bytes.fromhex(b).decode("utf-16-be")
             if re.fullmatch(r"[0-9A-Za-z]{2,6}", s):
-                return s.upper()
+                return s
         except (ValueError, UnicodeDecodeError):
             pass
     return b or ""
@@ -49,7 +51,7 @@ def _broker(cell) -> tuple[str, str, str]:
     if not bhid:
         m = re.search(r"GenLink2stk\('[^']*','([^']+)'", href)  # 少數頁面用 JS 連結
         bhid = decode_b(m.group(1)) if m else ""
-    return name, bhid.upper(), b
+    return name, bhid, b
 
 
 def parse_page(html: bytes, code: str, d: date) -> tuple[pd.DataFrame, dict, date | None]:
@@ -101,3 +103,13 @@ def fetch_broker_top(fx: Fetcher, code: str, d: date) -> Parsed:
     df, summary, served = parse_page(resp.content, code, d)
     return Parsed("broker_top", None, df, served, no_data=df.empty,
                   extras={"summary": summary}, raw=[resp.raw])
+
+
+def branch_id(broker_b: str, bhid: str = "") -> str:
+    """分點代號（區分大小寫）。富邦連結的 b 參數是分點；BHID 參數是券商總公司，兩者不同。"""
+    return decode_b(broker_b or "") or (bhid or "")
+
+
+def branch_key(branch: str) -> str:
+    """可安全當檔名與網址的分點鍵：小寫字母前加底線（918g → 918_g），在不分大小寫的檔案系統也不會撞名。"""
+    return "".join("_" + c if c.islower() else c for c in branch)

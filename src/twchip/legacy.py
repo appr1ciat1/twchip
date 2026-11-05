@@ -72,7 +72,7 @@ def compare(cfg: Config) -> pd.DataFrame:
         if "market" not in off.columns:   # 券商分點不分市場，兩邊都標為 ALL
             off["market"] = "ALL"
         if ds == "broker_top":
-            off["branch"] = off["broker_b"].fillna("").map(decode_b).str.upper()
+            off["branch"] = off["broker_b"].fillna("").map(decode_b)
         if ds == "inst_flows":
             # 舊專案的 foreign_net 是「外資合計」（含外資自營商）。上市官方沒有合計欄（NULL），用 fx + fd 推得。
             if {"fx_net", "fd_net"} <= set(off.columns):
@@ -88,26 +88,34 @@ def compare(cfg: Config) -> pd.DataFrame:
         common = set(o["date"]) & set(lg["date"])
         j = j[j["date"].isin(common)]
         diff = pd.Series(False, index=j.index)
+        relabel_col = "branch" if ds == "broker_top" else None
         for oc in colmap:
             a = j[f"{oc}__off"].astype("string").str.replace(r"\.0$", "", regex=True)
             b = j[f"{oc}__leg"].astype("string").str.replace(r"\.0$", "", regex=True)
             d_col = (a != b).fillna(True) & (j["_merge"] == "both")
             j[f"mm_{oc}"] = d_col            # 每個欄位各自的不符列數，方便追查原因
-            diff |= d_col
+            if oc != relabel_col:
+                diff |= d_col
         j["diff"] = diff
+        if relabel_col:
+            # 張數完全相同、只有分點代號不同：券商合併後代號重編（例：元富 5920 → 台新 9B20），不算數值差異
+            j["branch_relabel"] = j[f"mm_{relabel_col}"] & ~diff
         agg = {"both": ("_merge", lambda s: int((s == "both").sum())),
                "only_official": ("_merge", lambda s: int((s == "left_only").sum())),
                "only_legacy": ("_merge", lambda s: int((s == "right_only").sum())),
                "mismatched": ("diff", "sum")}
         agg.update({f"mm_{oc}": (f"mm_{oc}", "sum") for oc in colmap})
+        if relabel_col:
+            agg["branch_relabel"] = ("branch_relabel", "sum")
         g = j.groupby(["market", "date"]).agg(**agg).reset_index()
         g.insert(0, "dataset", ds)
         rows.append(g)
         shift_stats[ds] = _shift_explain(o, j[j["diff"]], keys, colmap)
-        bad = j[j["diff"] | (j["_merge"] == "right_only")].copy()
+        bad = j[j["diff"] | (j["_merge"] == "right_only") | j.get("branch_relabel", False)].copy()
         bad = bad.sort_values("_merge")          # 數值不符（both）排前面，只有舊資料有的排後面
         bad.insert(0, "dataset", ds)
-        samples.append(bad.drop(columns=[c for c in bad.columns if c.startswith("mm_") or c == "diff"]).astype(str))
+        samples.append(bad.drop(columns=[c for c in bad.columns if c.startswith("mm_") or c in ("diff", "branch_relabel")])
+                       .astype(str))
     res = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
     if not res.empty:
         p = cfg.quality_dir / "legacy_compare.parquet"

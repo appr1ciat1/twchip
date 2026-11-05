@@ -138,7 +138,8 @@ def cmd_legacy_compare(cfg: Config, args) -> int:
     if res.empty:
         print("沒有可比對的重疊日期")
         return 0
-    cols = ["both", "mismatched", "only_official", "only_legacy"] + sorted(c for c in res.columns if c.startswith("mm_"))
+    cols = ["both", "mismatched", "only_official", "only_legacy"] + \
+        (["branch_relabel"] if "branch_relabel" in res.columns else []) + sorted(c for c in res.columns if c.startswith("mm_"))
     s = res.groupby("dataset")[cols].sum().astype("int64")
     print("== 各資料集合計（mm_欄位 = 該欄位不符的列數）")
     print(s.T.to_string())

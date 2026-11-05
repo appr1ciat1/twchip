@@ -20,7 +20,8 @@ def site(tmp_path_factory):
     root = tmp_path_factory.mktemp("data")
     mk = Market(DAYS)
     bad = {("inst_flows", "TWSE", DAYS[10]): _copy_of("inst_flows", "TWSE", DAYS[3], served=DAYS[10])}
-    p = make(root, mk, bad, now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=TPE) + timedelta(hours=23))
+    # 隔日 01:00：上櫃外資持股已過定稿等待時間（config.settle_hours）
+    p = make(root, mk, bad, now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=TPE) + timedelta(hours=25))
     p.run(DAYS[0], DAYS[-1], fetch_holidays=False)
     p.run(DAYS[10], DAYS[10], fetch_holidays=False, force=True)  # 換成正確資料再跑一次 → 發布
     out = root / "site"
@@ -50,6 +51,14 @@ def test_json_values(site):
     s = load(out, "stock/1101.json")
     assert len(s["date"]) == len(DAYS) and len(s["foreign"]) == len(DAYS) and "broker" in s
     assert len(s["broker"]["days"][str(DAYS[-1])]["buy"]) == 15
+    # 分點以「分點代號」分組且區分大小寫：918G 與 918g 是兩個分點，檔名不撞號
+    bi = load(out, "broker/index.json")
+    BF = {f: i for i, f in enumerate(bi["fields"])}
+    rows = {r[BF["branch"]]: r for r in bi["rows"]}
+    assert {"918G", "918g"} <= set(rows) and rows["918G"][BF["key"]] != rows["918g"][BF["key"]]
+    assert rows["918g"][BF["key"]] == "918_g" and rows["918G"][BF["hq"]] == "9100"
+    assert (out / "data" / "broker" / "918_g.json").exists() and (out / "data" / "broker" / "918G.json").exists()
+    assert s["broker"]["fields"][2] == "key"
     h = load(out, "health.json")
     assert any(f[2] == "F4" for f in h["fails"]) is False or True  # 已重跑發布，失敗紀錄被新結果覆蓋
     assert h["days"][0]["date"] == str(DAYS[-1])

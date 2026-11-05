@@ -88,6 +88,8 @@ class Market:
                 buy, sell = (n + other, other) if side == "buy" else (other, n + other)
                 rows.append({"date": d, "code": code, "side": side, "rank": i, "broker_name": f"券商{side}{i}",
                              "bhid": f"{9000 + i}{'B' if side == 'buy' else 'S'}", "broker_b": "",
+                             **({"bhid": "9100", "broker_b": ("918G" if i == 1 else "918g").encode("utf-16-be").hex()}
+                                if i <= 2 else {}),   # 分點代號區分大小寫：同一總公司的兩個不同分點
                              "buy_lots": buy, "sell_lots": sell, "net_lots": n if side == "buy" else -n,
                              "pct": round(n / vol_lots * 100, 2)})
         df = pd.DataFrame(rows)

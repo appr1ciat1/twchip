@@ -138,7 +138,7 @@ async function showStock(code) {
       const day = b.days[sel.value];
       const head = [{ t: "#" }, { t: "分點" }, { t: "買進", n: 1 }, { t: "賣出", n: 1 }, { t: "買賣超", n: 1 }, { t: "佔比%", n: 1 }];
       const rows = (side) => day[side].map((r) => ({
-        link: r[2] ? `broker/${r[2]}` : "",
+        link: r[2] ? `broker/${r[2]}` : "",   // r[2] 是分點鍵（key）
         cells: [{ t: r[0] }, { t: r[1] }, { t: fmt(r[3]) }, { t: fmt(r[4]) }, { t: sgn(r[5]), c: cls(r[5]) }, { t: fmt(r[6], 2) }],
       }));
       table($("#s-buy"), head, rows("buy"));
@@ -150,24 +150,25 @@ async function showStock(code) {
 }
 
 // ------------------------------------------------------------------ 券商分點
-async function showBroker(bhid) {
+async function showBroker(key) {
   if (!BROKERS) BROKERS = await get("broker/index.json");
   const F = Object.fromEntries(BROKERS.fields.map((f, i) => [f, i]));
   const q = $("#b-q");
-  if (!q.dataset.bound) { q.addEventListener("input", () => showBroker(bhid)); q.dataset.bound = 1; }
+  if (!q.dataset.bound) { q.addEventListener("input", () => showBroker(key)); q.dataset.bound = 1; }
   const kw = q.value.trim();
-  let list = BROKERS.rows.filter((r) => !kw || r[F.bhid].includes(kw.toUpperCase()) || r[F.name].includes(kw) || r[F.aliases].some((a) => a.includes(kw)));
+  // 分點代號區分大小寫（918G 與 918g 是不同分點），搜尋時不分大小寫比對，顯示時保留原樣
+  let list = BROKERS.rows.filter((r) => !kw || r[F.branch].toUpperCase().includes(kw.toUpperCase()) || r[F.name].includes(kw) || r[F.aliases].some((a) => a.includes(kw)));
   list.sort((a, b) => b[F.appearances] - a[F.appearances]);
   table($("#b-list"), [{ t: "分點" }, { t: "上榜次數", n: 1 }, { t: "股票數", n: 1 }, { t: "淨買賣超（張）", n: 1 }],
     list.slice(0, 300).map((r) => ({
-      link: `broker/${r[F.bhid]}`, sel: r[F.bhid] === bhid,
-      cells: [{ h: `<span class="badge">${esc(r[F.bhid])}</span>${esc(r[F.name])}` }, { t: fmt(r[F.appearances]) },
+      link: `broker/${r[F.key]}`, sel: r[F.key] === key,
+      cells: [{ h: `<span class="badge">${esc(r[F.branch])}</span>${esc(r[F.name])}` }, { t: fmt(r[F.appearances]) },
         { t: r[F.stocks] }, { t: sgn(r[F.net_lots]), c: cls(r[F.net_lots]) }],
     })));
-  if (!bhid) { $("#b-title").textContent = "選一個分點"; $("#b-alias").textContent = ""; $("#b-rows").innerHTML = ""; return; }
-  const meta = BROKERS.rows.find((r) => r[F.bhid] === bhid);
-  const d = await get(`broker/${bhid}.json`);
-  $("#b-title").textContent = `${bhid} ${meta ? meta[F.name] : ""}`;
+  if (!key) { $("#b-title").textContent = "選一個分點"; $("#b-alias").textContent = ""; $("#b-rows").innerHTML = ""; return; }
+  const meta = BROKERS.rows.find((r) => r[F.key] === key);
+  const d = await get(`broker/${key}.json`);
+  $("#b-title").textContent = meta ? `${meta[F.branch]} ${meta[F.name]}（總公司 ${meta[F.hq]}）` : key;
   $("#b-alias").textContent = meta && meta[F.aliases].length ? `曾用名稱：${meta[F.aliases].join("、")}（券商合併或改名）` : "";
   table($("#b-rows"), [{ t: "日期" }, { t: "股票" }, { t: "方向" }, { t: "名次", n: 1 }, { t: "買賣超（張）", n: 1 }, { t: "佔比%", n: 1 }],
     d.rows.slice().reverse().map((r) => ({

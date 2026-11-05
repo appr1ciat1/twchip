@@ -37,6 +37,10 @@ def test_util_numbers_and_dates():
 def test_decode_b():
     assert fubon.decode_b("0039004100300030") == "9A00"
     assert fubon.decode_b("1590") == "1590"
+    # 區分大小寫：918G（新莊）與 918g（大甲）是不同分點（2026-11-05 實測富邦連結）
+    assert fubon.decode_b("0039003100380067") == "918g" and fubon.decode_b("0039003100380047") == "918G"
+    assert fubon.branch_key("918g") == "918_g" and fubon.branch_key("918G") == "918G"
+    assert fubon.branch_id("0039003100380067", "9100") == "918g" and fubon.branch_id("", "9100") == "9100"
 
 
 T86_FIELDS = ["證券代號", "證券名稱", "外陸資買進股數(不含外資自營商)", "外陸資賣出股數(不含外資自營商)",

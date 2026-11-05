@@ -46,6 +46,10 @@ class Config:
     # F4：法人買進／賣出超過當日成交股數的檔數比例上限。
     f4_tol: float = field(default_factory=lambda: float(os.environ.get("TWCHIP_F4_TOL") or "0.03"))
 
+    # 部分官方資料在當晚會先發布「未定稿」的數字，之後才修正。這些單位要等到交易日 0 時之後
+    # 這麼多小時才抓。證據：舊專案 2026-07-03 起改為當晚約 20:00~22:40 抓上櫃外資持股，
+    # 7/3~8/26 每天 40%~70% 的股票持股數比定稿值少（中位數 0.26%）；改在 23:00 後或隔日抓的日子全部吻合。
+    settle_hours: dict = field(default_factory=lambda: {("foreign_holdings", "TPEX"): 24.0})
     # 人工豁免清單（放在 repo，受版本控制）。格式見 waivers.json。
     waivers_path: Path = field(default_factory=lambda: Path(os.environ.get("TWCHIP_WAIVERS") or "waivers.json"))
 
