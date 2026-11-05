@@ -55,3 +55,38 @@ def test_import_and_compare_detects_differences(tmp_path):
     assert int(h["mm_issued_shares"].sum()) == 1 and int(h["mm_foreign_shares"].sum()) == 0
     rows = pd.read_parquet(cfg.quality_dir / "legacy_compare_rows.parquet")
     assert set(rows["dataset"]) >= {"inst_flows", "foreign_holdings"}
+
+
+
+def test_compare_broker_branch_and_date_shift(tmp_path):
+    """券商分點比的是分點代號（b 參數），不是總公司代號；並能指出「舊資料日期錯位」。"""
+    cfg = Config(data_dir=tmp_path)
+    import_archive(cfg, ARCHIVE)
+    store = Store(cfg)
+    b = pd.read_parquet(cfg.legacy_dir / "broker_trades.parquet")
+    b["d"] = pd.to_datetime(b["trade_date"]).dt.date
+    d1, d2 = pd.Timestamp("2026-10-29").date(), pd.Timestamp("2026-10-30").date()
+    for d in (d1, d2):
+        x = b[b["d"] == d].rename(columns={"stock_code": "code", "buy_vol": "buy_lots", "sell_vol": "sell_lots",
+                                           "net_vol": "net_lots", "broker_id": "broker_b"})
+        x["date"] = d
+        x["bhid"] = "ZZ00"          # 總公司代號與分點代號不同，不應造成差異
+        store.write_curated("broker_top", "ALL", d, x[["date", "code", "side", "rank", "broker_name", "bhid",
+                                                       "broker_b", "buy_lots", "sell_lots", "net_lots", "pct"]])
+    res = compare(cfg)
+    t = res[res["dataset"] == "broker_top"]
+    assert int(t["mismatched"].sum()) == 0 and int(t["both"].sum()) >= 600
+
+    # 舊資料日期錯位：把官方 10/30 的三大法人換成「舊資料 10/29 的值」→ 舊資料 10/29 等於官方 10/30（k=+1）
+    leg = pd.read_parquet(cfg.legacy_dir / "flows.parquet")
+    leg = leg[leg["quality_action"].isin(["keep", "recompute"])]
+    leg["d"] = pd.to_datetime(leg["date"]).dt.date
+    for d, src in ((d1, d2), (d2, d1)):
+        x = leg[(leg["d"] == src) & (leg["market"] == "TWSE")].copy()
+        x["date"] = d
+        store.write_curated("inst_flows", "TWSE", d, x[["date", "market", "code", "name", "foreign_net",
+                                                       "trust_net", "dealer_net"]])
+    compare(cfg)
+    import json
+    st = json.loads((cfg.quality_dir / "legacy_compare_shift.json").read_text(encoding="utf-8"))["inst_flows"]
+    assert st["n"] > 100 and st["k=+1"] > 0.4 and st["k=-1"] > 0.4, st

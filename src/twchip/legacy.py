@@ -43,7 +43,7 @@ def import_archive(cfg: Config, archive: Path) -> dict[str, int]:
 
 def compare(cfg: Config) -> pd.DataFrame:
     """逐日比對 legacy 與已驗證的官方資料。回傳每 (資料集, 市場, 日期) 的比對統計。"""
-    store, rows, samples = Store(cfg), [], []
+    store, rows, samples, shift_stats = Store(cfg), [], [], {}
     specs = {
         "flows": ("inst_flows", ["date", "market", "code"],
                   {"foreign_net": "foreign_net", "trust_net": "trust_net", "dealer_net": "dealer_net"}),
@@ -51,7 +51,9 @@ def compare(cfg: Config) -> pd.DataFrame:
         "foreign_holdings": ("foreign_holdings", ["date", "market", "code"],
                              {"foreign_shares": "foreign_shares", "issued_shares": "total_shares"}),
         "broker_trades": ("broker_top", ["date", "market", "code", "side", "rank"],
-                          {"net_lots": "net_vol", "buy_lots": "buy_vol", "sell_lots": "sell_vol", "bhid": "bhid"}),
+                          # 分點代號要比 branch（富邦連結的 b 參數）。官方的 bhid 欄是 BHID 參數＝券商總公司代號，
+                          # 舊資料的 bhid 是由 b 參數解碼而來＝分點代號，兩者意義不同，不能直接比。
+                          {"net_lots": "net_vol", "buy_lots": "buy_vol", "sell_lots": "sell_vol", "branch": "bhid"}),
     }
     for lname, (ds, keys, colmap) in specs.items():
         p = cfg.legacy_dir / f"{lname}.parquet"
@@ -69,6 +71,8 @@ def compare(cfg: Config) -> pd.DataFrame:
             continue
         if "market" not in off.columns:   # 券商分點不分市場，兩邊都標為 ALL
             off["market"] = "ALL"
+        if ds == "broker_top":
+            off["branch"] = off["broker_b"].fillna("").map(decode_b).str.upper()
         if ds == "inst_flows":
             # 舊專案的 foreign_net 是「外資合計」（含外資自營商）。上市官方沒有合計欄（NULL），用 fx + fd 推得。
             if {"fx_net", "fd_net"} <= set(off.columns):
@@ -99,7 +103,9 @@ def compare(cfg: Config) -> pd.DataFrame:
         g = j.groupby(["market", "date"]).agg(**agg).reset_index()
         g.insert(0, "dataset", ds)
         rows.append(g)
+        shift_stats[ds] = _shift_explain(o, j[j["diff"]], keys, colmap)
         bad = j[j["diff"] | (j["_merge"] == "right_only")].copy()
+        bad = bad.sort_values("_merge")          # 數值不符（both）排前面，只有舊資料有的排後面
         bad.insert(0, "dataset", ds)
         samples.append(bad.drop(columns=[c for c in bad.columns if c.startswith("mm_") or c == "diff"]).astype(str))
     res = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
@@ -110,4 +116,32 @@ def compare(cfg: Config) -> pd.DataFrame:
         if samples:   # 全部不符與只有舊資料有的列，供逐筆追查
             pd.concat(samples, ignore_index=True).to_parquet(cfg.quality_dir / "legacy_compare_rows.parquet",
                                                              index=False)
+        (cfg.quality_dir / "legacy_compare_shift.json").write_text(
+            json.dumps(shift_stats, ensure_ascii=False, indent=2), encoding="utf-8")
     return res
+
+
+def _shift_explain(o: pd.DataFrame, mism: pd.DataFrame, keys: list[str], colmap: dict) -> dict:
+    """不符的列中，舊資料的值是否其實等於官方「前後幾個交易日」的值？等於的話，代表舊資料日期錯位。
+    回傳 {"n": 不符列數, "k=-1": 舊資料 D 等於官方 D-1 的比例, ...}。"""
+    out = {"n": int(len(mism))}
+    if mism.empty:
+        return out
+    days = sorted(set(o["date"]))
+    idx = {d: i for i, d in enumerate(days)}
+    other = [k for k in keys if k != "date"]
+    leg_cols = [f"{c}__leg" for c in colmap]
+    m = mism[keys + leg_cols].copy()
+    for k in (-2, -1, 1, 2):
+        sh = o.copy()
+        # 官方 D+k 的值，對到日期 D
+        sh["date"] = sh["date"].map(lambda x: days[idx[x] - k] if 0 <= idx[x] - k < len(days) else None)
+        sh = sh.dropna(subset=["date"])
+        jj = m.merge(sh, on=["date"] + other, how="inner")
+        eq = pd.Series(True, index=jj.index)
+        for c in colmap:
+            a = jj[f"{c}__off"].astype("string").str.replace(r"\.0$", "", regex=True)
+            b = jj[f"{c}__leg"].astype("string").str.replace(r"\.0$", "", regex=True)
+            eq &= (a == b).fillna(False)
+        out[f"k={k:+d}"] = round(float(eq.sum()) / len(m), 4)
+    return out
