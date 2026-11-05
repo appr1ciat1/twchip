@@ -4,9 +4,15 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 TPE = ZoneInfo("Asia/Taipei")
+
+# F4 依市場的校正值（2026-11-05，273 個交易日；見 docs/DESIGN.md §4.6）。
+# 上市 273 天每天都是 0 檔超量；上櫃正常最高 1.8%，乘 1.5 倍安全距離後取 3%。
+F4_TOL_DEFAULT = {"TWSE": 0.005, "TPEX": 0.03}
+F4_TOL_FALLBACK = 0.03   # 未知市場（理論上不會發生）
 
 # 預設追蹤券商分點的股票。可用 TWCHIP_BROKER_CODES="2330,2317" 覆寫。
 DEFAULT_BROKER_CODES = [
@@ -36,15 +42,18 @@ class Config:
     sla_hours: float = float(os.environ.get("TWCHIP_SLA_HOURS", "30"))
     # T5：富邦隱含成交量與官方成交量的容許相對誤差。首次 probe 後可依實測校正。
     broker_volume_tol: float = float(os.environ.get("TWCHIP_BROKER_VOLUME_TOL", "0.03"))
-    # 校正用門檻：都可以在 GitHub repo 的 Variables 設定，不必改程式碼。
-    # T5：當日「隱含成交量 ÷ 官方成交量」與該股近 20 個交易日中位數的相對差距上限。
-    t5_rel_tol: float = field(default_factory=lambda: float(os.environ.get("TWCHIP_T5_REL_TOL") or "0.03"))
-    # T5 等級：W（只警告）或 B（阻擋）。依回補分析確認穩定後才改 B。
+    # 校正用門檻。預設值就是 2026-11-05 校正後的正式值（docs/DESIGN.md §4.6），
+    # 所以即使 GitHub Variables 被刪除，也不會悄悄放寬。Variables 只用來臨時調整；空字串視同未設定。
+    # T5：當日「隱含成交量 ÷（官方成交量 − 鉅額交易）」與該股近 20 個交易日中位數的相對差距上限。
+    t5_rel_tol: float = field(default_factory=lambda: float(os.environ.get("TWCHIP_T5_REL_TOL") or "0.15"))
+    # T5 等級：W（只警告）或 B（阻擋）。驗證集偵測率 77.1% < 80%，依規則維持 W。
     t5_level: str = field(default_factory=lambda: (os.environ.get("TWCHIP_T5_LEVEL") or "W").upper())
     # 計算 T5 基準所需的最少歷史天數；不足時退回與官方成交量直接比較（僅警告）。
     t5_min_history: int = field(default_factory=lambda: int(os.environ.get("TWCHIP_T5_MIN_HISTORY") or "10"))
-    # F4：法人買進／賣出超過當日成交股數的檔數比例上限。
-    f4_tol: float = field(default_factory=lambda: float(os.environ.get("TWCHIP_F4_TOL") or "0.03"))
+    # F4：法人買進／賣出超過當日成交股數的檔數比例上限。TWCHIP_F4_TOL 會同時套用到兩個市場；
+    # 沒設定（None）時用 F4_TOL_DEFAULT 依市場的校正值。
+    f4_tol: Optional[float] = field(default_factory=lambda: float(os.environ["TWCHIP_F4_TOL"])
+                                    if os.environ.get("TWCHIP_F4_TOL") else None)
 
     # 部分官方資料在當晚會先發布「未定稿」的數字，之後才修正。這些單位要等到交易日 0 時之後
     # 這麼多小時才抓。證據：舊專案 2026-07-03 起改為當晚約 20:00~22:40 抓上櫃外資持股，
@@ -54,10 +63,14 @@ class Config:
     waivers_path: Path = field(default_factory=lambda: Path(os.environ.get("TWCHIP_WAIVERS") or "waivers.json"))
 
     def f4_tol_for(self, market: str) -> float:
-        """F4 門檻可依市場分開設定（TWCHIP_F4_TOL_TWSE、TWCHIP_F4_TOL_TPEX），未設定時用 f4_tol。
+        """F4 門檻，越具體的設定優先：TWCHIP_F4_TOL_{市場} → TWCHIP_F4_TOL → 依市場的校正值。
         回補實測：上市 273 天全部是 0；上櫃最高 1.8%（櫃買行情不含盤後定價，法人買賣有含）。"""
         v = os.environ.get(f"TWCHIP_F4_TOL_{market.upper()}")
-        return float(v) if v else self.f4_tol
+        if v:
+            return float(v)
+        if self.f4_tol is not None:
+            return self.f4_tol
+        return F4_TOL_DEFAULT.get(market.upper(), F4_TOL_FALLBACK)
 
     @property
     def raw_dir(self) -> Path:

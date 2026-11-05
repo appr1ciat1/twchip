@@ -228,6 +228,20 @@ def test_f4_tolerance_can_differ_by_market(monkeypatch):
     assert cfg.f4_tol_for("TPEX") == 0.03
 
 
+def test_threshold_defaults_are_calibrated_values(monkeypatch):
+    """沒有任何 Variables（例如被誤刪，或 GitHub 傳入空字串）時，用的必須是校正後的正式值，不能悄悄放寬。"""
+    for k in ("TWCHIP_F4_TOL", "TWCHIP_F4_TOL_TWSE", "TWCHIP_F4_TOL_TPEX", "TWCHIP_T5_REL_TOL", "TWCHIP_T5_LEVEL"):
+        monkeypatch.setenv(k, "")
+    cfg = Config()
+    assert cfg.f4_tol_for("TWSE") == 0.005
+    assert cfg.f4_tol_for("TPEX") == 0.03
+    assert cfg.t5_rel_tol == 0.15 and cfg.t5_level == "W"
+    # 只設定通用的 TWCHIP_F4_TOL：兩個市場都套用它
+    monkeypatch.setenv("TWCHIP_F4_TOL", "0.01")
+    cfg = Config()
+    assert cfg.f4_tol_for("TWSE") == 0.01 and cfg.f4_tol_for("TPEX") == 0.01
+
+
 def test_waiver_turns_one_blocking_check_into_warning(tmp_path):
     """豁免只作用在指定的 (日期, 單位, 檢查)，且違反筆數不得超過記錄值；超過就照樣隔離。"""
     import json
