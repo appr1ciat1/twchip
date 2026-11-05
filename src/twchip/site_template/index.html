@@ -73,8 +73,12 @@
 
     <!-- 券商分點 -->
     <section id="tab-broker" class="tab" hidden>
-      <p class="note">只含分點進入追蹤股票前 15 名的日子。沒上榜的日子沒有資料，<b>不是 0</b>。分點以代號識別，名稱取最新一次。</p>
-      <div class="controls"><label>找分點 <input id="b-q" placeholder="名稱或代號"></label></div>
+      <p class="note">只含分點進入追蹤股票前 15 名的日子。沒上榜的日子沒有資料，<b>不是 0</b>。分點以代號識別，名稱取最新一次。勾選分點左邊的方框可以釘選，釘選的排在最前面。釘選存在這個瀏覽器裡，換瀏覽器或裝置不會同步。</p>
+      <div class="controls">
+        <label>找分點 <input id="b-q" placeholder="名稱或代號"></label>
+        <label><input type="checkbox" id="b-only"> 只看釘選</label>
+        <span id="b-pins" class="muted"></span>
+      </div>
       <div class="two wide-left">
         <div class="table-wrap tall"><table id="b-list" class="num clickable"></table></div>
         <div>

@@ -99,6 +99,7 @@ def test_browser(site):
             page.locator("#s-buy tbody tr").first.click()
             page.wait_for_function("location.hash.startsWith('#broker/')")
             page.wait_for_selector("#b-rows tbody tr td")
+            _check_pins(page, base)
             page.goto(base + "#health")
             page.wait_for_selector("#h-days tbody tr td")
             assert page.locator("#h-checks tbody tr").count() > 10
@@ -109,3 +110,42 @@ def test_browser(site):
     finally:
         srv.shutdown()
     assert errors == [], errors
+
+
+def _check_pins(page, base):
+    """券商分點釘選：勾選後排到最前面、不切換右邊的分點、重新整理後仍在、可只看釘選、找不到的釘選會提示。"""
+    page.goto(base + "#broker")
+    page.wait_for_selector("#b-list tbody tr td input.pin")
+    first_badge = "document.querySelector('#b-list tbody tr td:nth-child(2) .badge').textContent"
+    rows = page.locator("#b-list tbody tr")
+    assert rows.count() >= 3
+    target = rows.nth(2).locator("td:nth-child(2) .badge").text_content()
+    key = rows.nth(2).locator("input.pin").get_attribute("data-key")
+    assert page.evaluate(first_badge) != target
+    # 用分點鍵定位：釘選後列表會重排，「第 3 列」會變成別的分點
+    page.locator(f'input.pin[data-key="{key}"]').click()   # 用 click：勾選後元素會被重畫，check() 會等不到原元素
+    page.wait_for_function(f"{first_badge} === {json.dumps(target)}")
+    assert page.evaluate("location.hash") == "#broker"            # 點方框只釘選，不開啟分點
+    assert page.locator("#b-list tbody tr").first.get_attribute("class").split().count("pinned") == 1
+    assert page.text_content("#b-pins") == "已釘選 1 個"
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")  # 手機寬度不出現橫向捲動
+
+    page.reload()                                                 # 存在瀏覽器裡，重新整理後仍在最前面
+    page.wait_for_selector("#b-list tbody tr td input.pin")
+    page.wait_for_function(f"{first_badge} === {json.dumps(target)}")
+    assert page.locator(f'input.pin[data-key="{key}"]').is_checked()
+
+    page.check("#b-only")                                          # 只看釘選
+    page.wait_for_function("document.querySelectorAll('#b-list tbody tr').length === 1")
+    page.locator(f'input.pin[data-key="{key}"]').click()
+    page.wait_for_function("document.querySelector('#b-list tbody td').textContent.startsWith('還沒有釘選')")
+    assert page.text_content("#b-pins") == ""
+    page.uncheck("#b-only")
+    page.wait_for_function("document.querySelectorAll('#b-list tbody tr').length >= 3")
+
+    # 釘選了但資料裡找不到（例：合併後代號改變）：要提示，不能默默消失
+    page.evaluate("localStorage.setItem('pinnedBranches', JSON.stringify(['ZZZZ']))")
+    page.reload()
+    page.wait_for_selector("#b-list tbody tr td input.pin")
+    assert "另有 1 個目前找不到" in page.text_content("#b-pins")
+    page.evaluate("localStorage.removeItem('pinnedBranches')")

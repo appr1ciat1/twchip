@@ -46,6 +46,11 @@ table.num td.n, table.num th.n { text-align: right; font-variant-numeric: tabula
 tbody tr:hover { background: var(--bg); }
 tr.link { cursor: pointer; }
 tr.sel { background: var(--bg); }
+/* 釘選：方框要好點（手機上至少 24px 的點擊範圍），釘選的列左側加一條色帶 */
+.controls input[type="checkbox"], input.pin { width: 18px; height: 18px; padding: 0; margin: 0; accent-color: var(--accent); cursor: pointer; }
+td.pin-cell { width: 1%; padding: 3px 4px 3px 10px; }
+td.pin-cell label { display: inline-flex; padding: 3px; cursor: pointer; }
+tr.pinned td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .pos { color: var(--buy); } .neg { color: var(--sell); }
 .badge { display: inline-block; min-width: 3.4em; color: var(--muted); font-variant-numeric: tabular-nums; }
 .stock-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 4px; }

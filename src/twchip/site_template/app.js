@@ -27,7 +27,7 @@ function table(el, head, rows, opt = {}) {
   const th = head.map((h) => `<th class="${h.n ? "n" : ""}">${esc(h.t)}</th>`).join("");
   const body = rows.map((r) => {
     const tds = r.cells.map((c, i) => `<td class="${head[i].n ? "n " : ""}${c.c || ""}">${c.h ?? esc(c.t)}</td>`).join("");
-    return `<tr class="${r.link ? "link" : ""} ${r.sel ? "sel" : ""}" ${r.link ? `data-link="${esc(r.link)}"` : ""}>${tds}</tr>`;
+    return `<tr class="${r.link ? "link" : ""} ${r.sel ? "sel" : ""} ${r.cls || ""}" ${r.link ? `data-link="${esc(r.link)}"` : ""}>${tds}</tr>`;
   }).join("");
   el.innerHTML = `<thead><tr>${th}</tr></thead><tbody>${body || `<tr><td colspan="${head.length}">${opt.empty || "無資料"}</td></tr>`}</tbody>`;
   el.querySelectorAll("tr[data-link]").forEach((tr) => tr.addEventListener("click", () => { location.hash = tr.dataset.link; }));
@@ -150,21 +150,59 @@ async function showStock(code) {
 }
 
 // ------------------------------------------------------------------ 券商分點
+// 釘選的分點存在這個瀏覽器的 localStorage（網站是靜態頁，沒有帳號可以同步）。
+// 以「分點鍵」儲存，不用名稱：名稱會因合併改變，918G 與 918g 也是不同分點。
+// 瀏覽器不允許儲存時（例如部分無痕模式），釘選仍在這次瀏覽中有效，只是關掉頁面後不保留。
+const PIN_STORE = "pinnedBranches";
+let PINS = null;
+function loadPins() {
+  if (!PINS) {
+    try { const a = JSON.parse(localStorage_get(PIN_STORE) || "[]"); PINS = new Set(Array.isArray(a) ? a.map(String) : []); }
+    catch { PINS = new Set(); }
+  }
+  return PINS;
+}
+function savePins(s) { PINS = s; localStorage_set(PIN_STORE, JSON.stringify([...s].sort())); }
+
+let BKEY = null;   // 目前右邊顯示的分點；搜尋框與開關的事件都讀它，不綁死第一次開啟時的分點
 async function showBroker(key) {
+  BKEY = key;
   if (!BROKERS) BROKERS = await get("broker/index.json");
   const F = Object.fromEntries(BROKERS.fields.map((f, i) => [f, i]));
-  const q = $("#b-q");
-  if (!q.dataset.bound) { q.addEventListener("input", () => showBroker(key)); q.dataset.bound = 1; }
+  const q = $("#b-q"), only = $("#b-only");
+  if (!q.dataset.bound) { q.addEventListener("input", () => showBroker(BKEY)); q.dataset.bound = 1; }
+  if (!only.dataset.bound) { only.addEventListener("change", () => showBroker(BKEY)); only.dataset.bound = 1; }
   const kw = q.value.trim();
+  const pins = loadPins();
+  // 釘選了、但目前資料裡找不到的分點：多半是券商合併後富邦改了分點代號
+  const known = new Set(BROKERS.rows.map((r) => r[F.key]));
+  const lost = [...pins].filter((k) => !known.has(k)).length;
+  $("#b-pins").textContent = pins.size
+    ? `已釘選 ${pins.size - lost} 個` + (lost ? `；另有 ${lost} 個目前找不到（可能是券商合併後代號改變）` : "") : "";
   // 分點代號區分大小寫（918G 與 918g 是不同分點），搜尋時不分大小寫比對，顯示時保留原樣
   let list = BROKERS.rows.filter((r) => !kw || r[F.branch].toUpperCase().includes(kw.toUpperCase()) || r[F.name].includes(kw) || r[F.aliases].some((a) => a.includes(kw)));
-  list.sort((a, b) => b[F.appearances] - a[F.appearances]);
-  table($("#b-list"), [{ t: "分點" }, { t: "上榜次數", n: 1 }, { t: "股票數", n: 1 }, { t: "淨買賣超（張）", n: 1 }],
-    list.slice(0, 300).map((r) => ({
-      link: `broker/${r[F.key]}`, sel: r[F.key] === key,
-      cells: [{ h: `<span class="badge">${esc(r[F.branch])}</span>${esc(r[F.name])}` }, { t: fmt(r[F.appearances]) },
-        { t: r[F.stocks] }, { t: sgn(r[F.net_lots]), c: cls(r[F.net_lots]) }],
-    })));
+  if (only.checked) list = list.filter((r) => pins.has(r[F.key]));
+  // 釘選的排最前面；同一組內依上榜次數由多到少
+  list.sort((a, b) => (pins.has(b[F.key]) - pins.has(a[F.key])) || (b[F.appearances] - a[F.appearances]));
+  table($("#b-list"), [{ t: "" }, { t: "分點" }, { t: "上榜次數", n: 1 }, { t: "股票數", n: 1 }, { t: "淨買賣超（張）", n: 1 }],
+    list.slice(0, Math.max(300, pins.size)).map((r) => {
+      const k = r[F.key], on = pins.has(k), act = on ? "取消釘選" : "釘選";
+      return {
+        link: `broker/${k}`, sel: k === key, cls: on ? "pinned" : "",
+        cells: [{ c: "pin-cell", h: `<label title="${act}"><input type="checkbox" class="pin" data-key="${esc(k)}"${on ? " checked" : ""} aria-label="${act} ${esc(r[F.branch])} ${esc(r[F.name])}"></label>` },
+          { h: `<span class="badge">${esc(r[F.branch])}</span>${esc(r[F.name])}` }, { t: fmt(r[F.appearances]) },
+          { t: r[F.stocks] }, { t: sgn(r[F.net_lots]), c: cls(r[F.net_lots]) }],
+      };
+    }), { empty: only.checked ? "還沒有釘選的分點。取消「只看釘選」，再勾選分點左邊的方框。" : "找不到符合的分點" });
+  $("#b-list").querySelectorAll("td.pin-cell").forEach((td) => {
+    td.addEventListener("click", (e) => e.stopPropagation());   // 點方框只釘選，不切換右邊顯示的分點
+    td.querySelector("input.pin").addEventListener("change", (e) => {
+      const s = loadPins();
+      if (e.target.checked) s.add(e.target.dataset.key); else s.delete(e.target.dataset.key);
+      savePins(s);
+      showBroker(BKEY);
+    });
+  });
   if (!key) { $("#b-title").textContent = "選一個分點"; $("#b-alias").textContent = ""; $("#b-rows").innerHTML = ""; return; }
   const meta = BROKERS.rows.find((r) => r[F.key] === key);
   const d = await get(`broker/${key}.json`);
