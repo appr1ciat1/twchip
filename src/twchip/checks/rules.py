@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from ..schemas import KEYS
-from ..sources import Parsed
+from ..sources import CODE_RE, Parsed
 from . import CheckResult, bad, ok, skip
 
 FINGERPRINT_COLS = {
@@ -239,9 +239,17 @@ def block_trades(df: pd.DataFrame, quotes_df: Optional[pd.DataFrame],
         return out
     agg = df.groupby("code", as_index=False)["volume_shares"].sum()
     j = agg.merge(quotes_df[["code", "volume_shares"]], on="code", how="left", suffixes=("", "_q"))
+    # 本專案的行情、法人、外資持股只收錄代號符合 CODE_RE 的證券（2026-11-04 決定維持此範圍）。
+    # 範圍外的證券（例：台新金特別股 2887Z1）照樣保存鉅額交易，但不要求有行情，只記警告。
+    inside = j["code"].astype(str).str.match(CODE_RE)
+    out_codes = sorted(set(j.loc[~inside, "code"].astype(str)))
+    out.append((ok if not out_codes else bad)("K2b", "鉅額交易中有本專案範圍外的證券（代號不符格式）", "W",
+               f"{len(out_codes)} 檔：{', '.join(out_codes[:10])}" if out_codes else "無", len(out_codes),
+               [{"code": c} for c in out_codes[:10]]))
+    j = j[inside]
     miss = j["volume_shares_q"].isna()
-    out.append((ok if not miss.any() else bad)("K2", "鉅額交易的股票都有當日行情", "B", f"{int(miss.sum())} 檔缺行情",
-               int(miss.sum()), _ex(j, miss, ["code"])))
+    out.append((ok if not miss.any() else bad)("K2", "鉅額交易的股票都有當日行情（本專案範圍內）", "B",
+               f"{int(miss.sum())} 檔缺行情", int(miss.sum()), _ex(j, miss, ["code"])))
     over = ~miss & (j["volume_shares"] > j["volume_shares_q"])
     # 證交所每日收盤行情的成交股數包含鉅額交易，所以每檔鉅額股數不可能超過當日成交股數。
     out.append((ok if not over.any() else bad)("K3", "每檔鉅額成交股數 ≤ 當日成交股數", "B", f"{int(over.sum())} 檔超過",

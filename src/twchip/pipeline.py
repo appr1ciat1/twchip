@@ -109,7 +109,7 @@ class Pipeline:
         # 1) 行情：決定這天是不是交易日，也是所有跨表檢查的基準
         for m in MARKETS:
             o = self._unit(d, "quotes", m, force)
-            units[f"quotes/{m}"] = o.__dict__
+            self._record(units, f"quotes/{m}", o)
         tw = self._has(d, "quotes", "TWSE", units)
         tp = self._has(d, "quotes", "TPEX", units)
         self.cal.observe(d, tw, tp)
@@ -124,10 +124,10 @@ class Pipeline:
         for ds in ("inst_flows", "foreign_holdings"):
             if ds in datasets:
                 for m in MARKETS:
-                    units[f"{ds}/{m}"] = self._unit(d, ds, m, force).__dict__
+                    self._record(units, f"{ds}/{m}", self._unit(d, ds, m, force))
         # 鉅額交易只有上市；T5 需要它，所以排在券商分點之前
         if "block_trades" in datasets and ("block_trades", "TWSE") in self.units:
-            units["block_trades/TWSE"] = self._unit(d, "block_trades", "TWSE", force).__dict__
+            self._record(units, "block_trades/TWSE", self._unit(d, "block_trades", "TWSE", force))
         if "broker_top" in datasets:
             units["broker_top/ALL"] = self._broker(d, force)
         self.store.write_quality(d, rep)
@@ -169,6 +169,15 @@ class Pipeline:
             ctx["flows_d"] = fl
             ctx["flows_prev"] = self.store.read_curated("inst_flows", m, prev)
         return None, ctx
+
+    def _record(self, units: dict, key: str, o: UnitOutcome) -> None:
+        """寫入品質報告。重跑時遇到已發布的單位（cached），保留當初發布時的檢查明細，只加註最後確認時間；
+        否則稽核時會看不到「當初為什麼准許發布」。"""
+        old = units.get(key) or {}
+        if o.status == "cached" and old.get("status") == "published":
+            old["last_seen_cached"] = self.now().isoformat()
+            return
+        units[key] = o.__dict__
 
     def _waivers(self) -> list[dict]:
         if not hasattr(self, "_waiver_cache"):

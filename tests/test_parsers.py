@@ -190,3 +190,18 @@ def test_block_trades_real_rows_and_title_date():
 def test_block_trades_no_data():
     p = twse.fetch_block_trades(FakeFetcher([{"stat": "很抱歉，沒有符合條件的資料!"}]), D)
     assert p.no_data and p.df.empty
+
+
+def test_block_k2_ignores_codes_outside_project_scope():
+    """範圍外的代號（2887Z1）不要求有行情：K2 通過、K2b 警告；範圍內缺行情仍然擋下。"""
+    import pandas as pd
+    from twchip.checks import rules
+    df = pd.DataFrame({"code": ["2330", "2887Z1"], "price": [10.0, 20.0],
+                       "volume_shares": [1000, 2000], "value_twd": [10000, 40000]})
+    ex = {"reported_total_shares": 3000, "reported_total_value": 50000}
+    q = pd.DataFrame({"code": ["2330"], "volume_shares": [5000]})
+    r = {x.id: x for x in rules.block_trades(df, q, ex)}
+    assert r["K2"].status == "pass" and r["K2b"].status == "fail" and r["K2b"].level == "W", r
+    assert "2887Z1" in r["K2b"].detail
+    r = {x.id: x for x in rules.block_trades(df, pd.DataFrame({"code": ["1101"], "volume_shares": [1]}), ex)}
+    assert r["K2"].status == "fail" and r["K2"].level == "B"

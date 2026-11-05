@@ -300,3 +300,16 @@ def test_block_trades_are_subtracted_for_t5(tmp_path):
     p = run(False, "b")
     st = p.store.read_quality(last)["units"]["broker_top/ALL"]["stocks"]["1101"]
     assert st["status"] == "quarantined", st
+
+
+def test_rerun_keeps_original_check_details(tmp_path):
+    """重跑時已發布的單位顯示為 cached，但品質報告必須保留當初發布時的檢查明細。"""
+    mk = Market(DAYS)
+    p = make(tmp_path, mk)
+    p.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+    before = p.store.read_quality(DAYS[5])["units"]["inst_flows/TWSE"]
+    assert before["status"] == "published" and before["checks"]
+    p2 = make(tmp_path, mk)
+    p2.run(DAYS[0], DAYS[-1], fetch_holidays=False)
+    after = p2.store.read_quality(DAYS[5])["units"]["inst_flows/TWSE"]
+    assert after["status"] == "published" and after["checks"] == before["checks"] and "last_seen_cached" in after

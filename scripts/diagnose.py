@@ -5,6 +5,8 @@
   C. T5 大幅偏離：官方成交股數是否包含鉅額交易與盤後定價，而富邦的分母不含？
   D. C 之後仍無法解釋的 4 筆：是否來自「證券組合」鉅額交易？盤後定價的數量單位是股還是張？
      （D 要指定才會跑：python scripts/diagnose.py ~/twchip-data D）
+  E. 各官方來源中，哪些證券代號不符合本專案的代號格式（CODE_RE）而被略過？
+     （E 要指定才會跑：python scripts/diagnose.py ~/twchip-data E [YYYY-MM-DD ...]）
 
 用法：python scripts/diagnose.py [資料目錄，預設 ~/twchip-data] [A|B|C ...]
 C 會向證交所抓鉅額交易與盤後定價（每個日期 2 次請求，間隔 3.2 秒），約 2~3 分鐘。
@@ -19,9 +21,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ARGS = [a for a in sys.argv[1:] if a not in ("A", "B", "C", "D")]
+ARGS = [a for a in sys.argv[1:] if a not in ("A", "B", "C", "D", "E")]
 D = Path(os.path.expanduser(ARGS[0] if ARGS else "~/twchip-data"))
-PARTS = [a for a in sys.argv[1:] if a in ("A", "B", "C", "D")] or ["A", "B", "C"]
+PARTS = [a for a in sys.argv[1:] if a in ("A", "B", "C", "D", "E")] or ["A", "B", "C"]
 os.environ.setdefault("TWCHIP_DATA_DIR", str(D))
 pd.set_option("display.width", 220)
 pd.set_option("display.max_columns", 30)
@@ -264,3 +266,55 @@ if "D" in PARTS:
             for row in t["data"]:
                 if str(row[0]).strip() in codes:
                     print("      ", row)
+
+# ------------------------------------------------------------------ E
+if "E" in PARTS:
+    import re as _re
+    from twchip.config import Config
+    from twchip.http import Fetcher
+    from twchip.rawstore import RawStore
+    from twchip.sources import CODE_RE
+    from twchip.util import ymd
+    cfg = Config()
+    fx = Fetcher(RawStore(cfg.data_dir), cfg.min_interval)
+    dates = [date.fromisoformat(a) for a in ARGS[1:]] or [date(2026, 2, 9), DAYS[-1]]
+    TW, TP = "https://www.twse.com.tw/rwd/zh", "https://www.tpex.org.tw/www/zh-tw"
+
+    def tables(j):
+        out = [t for t in (j.get("tables") or []) if t.get("fields") and t.get("data")]
+        if j.get("fields") and j.get("data"):
+            out.append({"title": j.get("title"), "fields": j["fields"], "data": j["data"]})
+        return out
+
+    def scan(name, url, params, d):
+        try:
+            r = fx.get(url, params, source="diag_codes", d=d, key=name.replace("/", "_"), ext="json")
+            j = json.loads(r.content.decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            print(f"    {name}: 失敗 {e}")
+            return
+        found = False
+        for t in tables(j):
+            f = [str(x) for x in t["fields"]]
+            ci = next((i for i, x in enumerate(f) if "代號" in x), None)
+            ni = next((i for i, x in enumerate(f) if "名稱" in x), None)
+            if ci is None:
+                continue
+            found = True
+            codes = [_re.sub("<[^>]+>", "", str(row[ci])).strip() for row in t["data"]]
+            badc = [(c, str(t["data"][k][ni]).strip() if ni is not None else "") for k, c in enumerate(codes)
+                    if c and not _re.match(CODE_RE, c) and c not in ("總計", "合計")]
+            print(f"    {name}｜{t.get('title')}｜{len(codes)} 列，不符格式 {len(badc)} 列：{badc[:20]}")
+        if not found:
+            print(f"    {name}: stat={j.get('stat')}，沒有含「代號」欄的表")
+
+    for d in dates:
+        print(f"\n== E. {d}：不符合代號格式 {CODE_RE} 的證券")
+        scan("TWSE/MI_INDEX", f"{TW}/afterTrading/MI_INDEX", {"date": ymd(d), "type": "ALLBUT0999", "response": "json"}, d)
+        scan("TWSE/T86", f"{TW}/fund/T86", {"date": ymd(d), "selectType": "ALLBUT0999", "response": "json"}, d)
+        scan("TWSE/MI_QFIIS", f"{TW}/fund/MI_QFIIS", {"date": ymd(d), "selectType": "ALLBUT0999", "response": "json"}, d)
+        scan("TWSE/BFIAUU", f"{TW}/block/BFIAUU", {"date": ymd(d), "selectType": "S", "response": "json"}, d)
+        scan("TPEX/otc", f"{TP}/afterTrading/otc", {"type": "EW", "date": f"{d:%Y/%m/%d}", "response": "json"}, d)
+        scan("TPEX/dailyTrade", f"{TP}/insti/dailyTrade", {"type": "Daily", "sect": "EW", "date": f"{d:%Y/%m/%d}",
+                                                          "response": "json"}, d)
+        scan("TPEX/qfii", f"{TP}/insti/qfii", {"date": f"{d:%Y/%m/%d}", "response": "json"}, d)
