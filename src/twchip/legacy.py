@@ -43,13 +43,14 @@ def import_archive(cfg: Config, archive: Path) -> dict[str, int]:
 
 def compare(cfg: Config) -> pd.DataFrame:
     """逐日比對 legacy 與已驗證的官方資料。回傳每 (資料集, 市場, 日期) 的比對統計。"""
-    store, rows = Store(cfg), []
+    store, rows, samples = Store(cfg), [], []
     specs = {
         "flows": ("inst_flows", ["date", "market", "code"],
                   {"foreign_net": "foreign_net", "trust_net": "trust_net", "dealer_net": "dealer_net"}),
+        # 對照表的方向一律是 {官方欄位: 舊資料欄位}
         "foreign_holdings": ("foreign_holdings", ["date", "market", "code"],
-                             {"foreign_shares": "foreign_shares", "total_shares": "issued_shares"}),
-        "broker_trades": ("broker_top", ["date", "code", "side", "rank"],
+                             {"foreign_shares": "foreign_shares", "issued_shares": "total_shares"}),
+        "broker_trades": ("broker_top", ["date", "market", "code", "side", "rank"],
                           {"net_lots": "net_vol", "buy_lots": "buy_vol", "sell_lots": "sell_vol", "bhid": "bhid"}),
     }
     for lname, (ds, keys, colmap) in specs.items():
@@ -66,6 +67,13 @@ def compare(cfg: Config) -> pd.DataFrame:
         off = store.read_range(ds)
         if off.empty:
             continue
+        if "market" not in off.columns:   # 券商分點不分市場，兩邊都標為 ALL
+            off["market"] = "ALL"
+        if ds == "inst_flows":
+            # 舊專案的 foreign_net 是「外資合計」（含外資自營商）。上市官方沒有合計欄（NULL），用 fx + fd 推得。
+            if {"fx_net", "fd_net"} <= set(off.columns):
+                tot = off["fx_net"] + off["fd_net"]
+                off["foreign_net"] = off["foreign_net"].fillna(tot) if "foreign_net" in off.columns else tot
         o = off[keys + list(colmap)].rename(columns={c: f"{c}__off" for c in colmap})
         lg = leg.loc[usable, keys + list(colmap.values())].rename(
             columns={lc: f"{oc}__leg" for oc, lc in colmap.items()})
@@ -79,18 +87,27 @@ def compare(cfg: Config) -> pd.DataFrame:
         for oc in colmap:
             a = j[f"{oc}__off"].astype("string").str.replace(r"\.0$", "", regex=True)
             b = j[f"{oc}__leg"].astype("string").str.replace(r"\.0$", "", regex=True)
-            diff |= (a != b).fillna(True) & (j["_merge"] == "both")
+            d_col = (a != b).fillna(True) & (j["_merge"] == "both")
+            j[f"mm_{oc}"] = d_col            # 每個欄位各自的不符列數，方便追查原因
+            diff |= d_col
         j["diff"] = diff
-        g = j.groupby(["market", "date"]).agg(
-            both=("_merge", lambda s: int((s == "both").sum())),
-            only_official=("_merge", lambda s: int((s == "left_only").sum())),
-            only_legacy=("_merge", lambda s: int((s == "right_only").sum())),
-            mismatched=("diff", "sum")).reset_index()
+        agg = {"both": ("_merge", lambda s: int((s == "both").sum())),
+               "only_official": ("_merge", lambda s: int((s == "left_only").sum())),
+               "only_legacy": ("_merge", lambda s: int((s == "right_only").sum())),
+               "mismatched": ("diff", "sum")}
+        agg.update({f"mm_{oc}": (f"mm_{oc}", "sum") for oc in colmap})
+        g = j.groupby(["market", "date"]).agg(**agg).reset_index()
         g.insert(0, "dataset", ds)
         rows.append(g)
+        bad = j[j["diff"] | (j["_merge"] == "right_only")].copy()
+        bad.insert(0, "dataset", ds)
+        samples.append(bad.drop(columns=[c for c in bad.columns if c.startswith("mm_") or c == "diff"]).astype(str))
     res = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
     if not res.empty:
         p = cfg.quality_dir / "legacy_compare.parquet"
         p.parent.mkdir(parents=True, exist_ok=True)
         res.to_parquet(p, index=False)
+        if samples:   # 全部不符與只有舊資料有的列，供逐筆追查
+            pd.concat(samples, ignore_index=True).to_parquet(cfg.quality_dir / "legacy_compare_rows.parquet",
+                                                             index=False)
     return res

@@ -138,11 +138,22 @@ def cmd_legacy_compare(cfg: Config, args) -> int:
     if res.empty:
         print("沒有可比對的重疊日期")
         return 0
-    s = res.groupby("dataset")[["both", "mismatched", "only_official", "only_legacy"]].sum()
-    print(s.to_string())
+    cols = ["both", "mismatched", "only_official", "only_legacy"] + sorted(c for c in res.columns if c.startswith("mm_"))
+    s = res.groupby("dataset")[cols].sum().astype("int64")
+    print("== 各資料集合計（mm_欄位 = 該欄位不符的列數）")
+    print(s.T.to_string())
     bad = res[(res["mismatched"] > 0) | (res["only_legacy"] > 0)]
-    print("\n有差異的日期：")
-    print(bad.to_string(index=False) if not bad.empty else "（無）")
+    print(f"\n== 有差異的 (資料集, 市場, 日期)：{len(bad)} 組")
+    with pd.option_context("display.max_rows", 2000, "display.width", 250):
+        print(bad[["dataset", "market", "date"] + cols].to_string(index=False) if not bad.empty else "（無）")
+    p = cfg.quality_dir / "legacy_compare_rows.parquet"
+    if p.exists():
+        rows = pd.read_parquet(p)
+        print(f"\n== 差異明細（共 {len(rows)} 列，完整內容在 {p}）各資料集前 15 列：")
+        with pd.option_context("display.width", 250, "display.max_columns", 30):
+            for ds, g in rows.groupby("dataset"):
+                print(f"\n-- {ds}")
+                print(g.drop(columns="dataset").head(15).to_string(index=False))
     return 0
 
 

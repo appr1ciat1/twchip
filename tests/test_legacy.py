@@ -29,6 +29,8 @@ def test_import_and_compare_detects_differences(tmp_path):
             x = x[["date", "market", "code", "name", "foreign_net", "trust_net", "dealer_net"]]
             if d.day == 30 and m == "TWSE":
                 x.loc[x.index[0], "trust_net"] += 1000
+            if d.day == 29 and m == "TWSE":   # 上市官方沒有外資合計：foreign_net 為 NULL，由 fx + fd 推得
+                x["fx_net"], x["fd_net"], x["foreign_net"] = x["foreign_net"] - 7, 7, None
             store.write_curated("inst_flows", m, d, x)
     res = compare(cfg)
     f = res[res["dataset"] == "inst_flows"]
@@ -36,3 +38,20 @@ def test_import_and_compare_detects_differences(tmp_path):
     bad = f[f["mismatched"] > 0].iloc[0]
     assert str(bad["date"]) == "2026-10-30" and bad["market"] == "TWSE"
     assert int(f["only_legacy"].sum()) == 0
+    assert int(f["mm_trust_net"].sum()) == 1 and int(f["mm_foreign_net"].sum()) == 0
+
+    # 外資持股：官方 issued_shares 對舊資料 total_shares
+    lh = pd.read_parquet(cfg.legacy_dir / "foreign_holdings.parquet")
+    lh = lh[lh["quality_action"].isin(["keep", "recompute"])]
+    d = pd.Timestamp("2026-10-30").date()
+    x = lh[(pd.to_datetime(lh["date"]).dt.date == d) & (lh["market"] == "TWSE")].copy()
+    x["date"] = d
+    x = x.rename(columns={"total_shares": "issued_shares"})[["date", "market", "code", "name", "issued_shares",
+                                                           "foreign_shares"]]
+    x.loc[x.index[0], "issued_shares"] += 1
+    store.write_curated("foreign_holdings", "TWSE", d, x)
+    res = compare(cfg)
+    h = res[res["dataset"] == "foreign_holdings"]
+    assert int(h["mm_issued_shares"].sum()) == 1 and int(h["mm_foreign_shares"].sum()) == 0
+    rows = pd.read_parquet(cfg.quality_dir / "legacy_compare_rows.parquet")
+    assert set(rows["dataset"]) >= {"inst_flows", "foreign_holdings"}
