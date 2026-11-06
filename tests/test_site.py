@@ -59,6 +59,10 @@ def test_json_values(site):
     assert rows["918g"][BF["key"]] == "918_g" and rows["918G"][BF["hq"]] == "9100"
     assert (out / "data" / "broker" / "918_g.json").exists() and (out / "data" / "broker" / "918G.json").exists()
     assert s["broker"]["fields"][2] == "key"
+    # 私人網站：不讓搜尋引擎收錄（輔助措施，真正的保護是 Cloudflare Access）
+    assert "X-Robots-Tag: noindex" in (out / "_headers").read_text()
+    assert (out / "robots.txt").read_text() == "User-agent: *\nDisallow: /\n"
+    assert not (out / ".nojekyll").exists()
     h = load(out, "health.json")
     assert any(f[2] == "F4" for f in h["fails"]) is False or True  # 已重跑發布，失敗紀錄被新結果覆蓋
     assert h["days"][0]["date"] == str(DAYS[-1])

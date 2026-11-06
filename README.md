@@ -33,12 +33,13 @@
 
 ## 一次性設定
 
-1. 在 GitHub 建立 **Public** repo（GitHub 免費方案只有公開 repo 能開 Pages；原始資料仍在私有 Hugging Face）。
-2. Settings → Pages → Source 選 **GitHub Actions**。
+1. 在 GitHub 建立 repo。原始資料在私有 Hugging Face，網站在 Cloudflare Pages 並由 Access 保護，repo 本身只放程式。
+2. 網站保護：照「網站（私人）」一節設定 Cloudflare。
 3. 在 Hugging Face 建立 **寫入權限** 的 access token。
 4. Settings → Secrets and variables → Actions：
    - Secret `HF_TOKEN`：上一步的 token
    - Variable `TWCHIP_HF_REPO`：例如 `yourname/twchip-data`（不存在會自動建立為私有）
+   - Secret `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`：見「網站（私人）」
    - （選用）Variable `TWCHIP_SITE_BROKER` 設為 `0` 可在網站上隱藏券商分點
 5. Actions → **probe** → Run workflow，確認每個資料源的欄位與檢查結果。
 6. Actions → **backfill** 分段回補；每段結束後 **pages** 會自動部署網站。
@@ -60,9 +61,20 @@ twchip hf-pull / hf-push --since EPOCH        Hugging Face 同步
 twchip bsr CODE                               證交所日報表人工稽核（需輸入驗證碼）
 ```
 
-## 網站（GitHub Pages）
+## 網站（私人）
 
-`pages` workflow 把已驗證的資料預先算成 JSON，部署成靜態網站：
+`pages` workflow 把已驗證的資料預先算成 JSON，部署到 Cloudflare Pages。網站前面由 Cloudflare Access 保護，
+只有指定的 Google 帳號登入後才看得到（Gmail 密碼 + Google 兩步驟驗證）。設計與安全順序見 `docs/DESIGN.md` §12。
+
+| 設定 | 種類 | 值 |
+|---|---|---|
+| `CLOUDFLARE_API_TOKEN` | Secret | 權限：Account → Cloudflare Pages → Edit |
+| `CLOUDFLARE_ACCOUNT_ID` | Secret | Cloudflare 帳號 ID |
+| `TWCHIP_CF_PROJECT` | Variable（選用） | Pages 專案名稱，預設 `twchip` |
+| `TWCHIP_SITE_HOST` | Variable | 專案的網址，例如 `twchip.pages.dev`（名稱被占用時 Cloudflare 會加後綴，以實際為準） |
+| `TWCHIP_SITE_LIVE` | Variable | Access 設定好、確認未登入會被擋下之後才設成 `yes`。之前只會部署不含資料的佔位頁 |
+
+網站內容：
 
 - **法人排行**：1／5／10／20／60 日累計買賣超，可依外資、投信、自營、合計或外資持股變化排序，可排除 ETF
 - **個股**：收盤價、三大法人買賣超、外資持股比率、主力進出前 15 名（近 20 日可切換）

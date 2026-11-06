@@ -1,7 +1,16 @@
 name: pages
 
-# daily 或 backfill 結束後（不論成功與否）重新產生網站並部署到 GitHub Pages。
-# 網站只包含已通過驗證的 curated 資料；與資料管線分開，網站壞了不影響資料。
+# daily 或 backfill 結束後重新產生網站，部署到 Cloudflare Pages。
+# 網站前面由 Cloudflare Access 保護：只有指定的 Google 帳號登入後才看得到（docs/DESIGN.md §12）。
+#
+# 安全順序（任何一步沒確認，就不部署資料）：
+#   1. 部署一個不含資料的佔位頁到預覽分支 guard。
+#   2. 確認正式網址、guard 預覽網址、該次部署網址，未登入時都被 Access 擋下。
+#   3. 才產生含資料的網站並部署到正式網址。
+#   4. 部署後再確認一次；未受保護就立刻改回佔位頁，並讓工作流程失敗（GitHub 會寄信）。
+#
+# Variable TWCHIP_SITE_LIVE 不是 yes 時，正式網址只部署佔位頁。第一次設定 Access 時用這個模式。
+# 不使用任何 GitHub artifact：公開 repo 的 artifact 任何 GitHub 使用者都能下載。
 on:
   workflow_run:
     workflows: [daily, backfill]
@@ -10,15 +19,19 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
+
+# 明確指定 shell: bash 才會開啟 pipefail。預設的 bash -e 沒有 pipefail，
+# 「wrangler ... | tee log」裡 wrangler 失敗會被 tee 蓋掉，部署失敗卻顯示成功。
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  build:
+  deploy:
     # daily 被開關略過時不部署；backfill 與手動執行一律部署。
     if: >-
       github.event_name == 'workflow_dispatch' ||
@@ -31,26 +44,76 @@ jobs:
       TWCHIP_HF_REPO: ${{ vars.TWCHIP_HF_REPO }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       TWCHIP_SITE_BROKER: ${{ vars.TWCHIP_SITE_BROKER || '1' }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PROJECT: ${{ vars.TWCHIP_CF_PROJECT || 'twchip' }}
+      SITE_HOST: ${{ vars.TWCHIP_SITE_HOST }}
+      WRANGLER: npx --yes wrangler@4.158.0
+      NO_COLOR: "1"
+      FORCE_COLOR: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install .
-      - run: twchip hf-pull --years $(( $(date -u +%Y) - 1 )) $(date -u +%Y)
-      - run: twchip site --out site
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/setup-node@v4
         with:
-          path: site
+          node-version: "22"
+      - run: pip install .
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: 檢查必要設定
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::缺少 Secrets：CLOUDFLARE_API_TOKEN 或 CLOUDFLARE_ACCOUNT_ID"; exit 1
+          fi
+
+      - name: 建立 Cloudflare Pages 專案（已存在就略過）
+        run: $WRANGLER pages project create "$PROJECT" --production-branch=main || echo "專案已存在，或建立失敗；下一步部署會顯示原因"
+
+      - name: 1. 部署佔位頁到預覽分支 guard
+        id: guard
+        run: |
+          twchip site --placeholder --out placeholder
+          $WRANGLER pages deploy placeholder --project-name="$PROJECT" --branch=guard --commit-dirty=true 2>&1 | tee guard.log
+          urls=$(grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' guard.log | sort -u | tr '\n' ' ')
+          echo "部署網址：$urls"
+          echo "urls=$urls" >> "$GITHUB_OUTPUT"
+
+      - name: 2. 確認保護生效
+        id: check
+        # 尚未開放（TWCHIP_SITE_LIVE 不是 yes）時只是提供資訊，失敗不中斷，方便第一次設定 Access。
+        continue-on-error: ${{ vars.TWCHIP_SITE_LIVE != 'yes' }}
+        run: |
+          if [ -z "$SITE_HOST" ]; then echo "::error::Variable TWCHIP_SITE_HOST 尚未設定"; exit 1; fi
+          if [ -z "${{ steps.guard.outputs.urls }}" ]; then echo "::error::抓不到佔位頁的部署網址，無法確認保護"; exit 1; fi
+          twchip access-check "https://$SITE_HOST/" "https://$SITE_HOST/data/meta.json" "https://guard.$SITE_HOST/" ${{ steps.guard.outputs.urls }}
+
+      - name: 3. 產生網站（含資料）
+        if: vars.TWCHIP_SITE_LIVE == 'yes'
+        run: |
+          twchip hf-pull --years $(( $(date -u +%Y) - 1 )) $(date -u +%Y)
+          twchip site --out site
+
+      - name: 3. 部署到正式網址
+        run: |
+          if [ "${{ vars.TWCHIP_SITE_LIVE }}" = "yes" ]; then dir=site; else
+            dir=placeholder; echo "::notice::TWCHIP_SITE_LIVE 不是 yes：正式網址只部署佔位頁"; fi
+          $WRANGLER pages deploy "$dir" --project-name="$PROJECT" --branch=main --commit-dirty=true 2>&1 | tee deploy.log
+
+      - name: 4. 部署後再確認一次
+        if: vars.TWCHIP_SITE_LIVE == 'yes'
+        run: |
+          urls=$(grep -Eo 'https://[A-Za-z0-9.-]+\.pages\.dev' deploy.log | sort -u | sed 's#$#/data/meta.json#' | tr '\n' ' ')
+          if [ -z "$urls" ] || ! twchip access-check "https://$SITE_HOST/data/meta.json" $urls; then
+            echo "::error::部署後無法確認受保護：改回佔位頁"
+            $WRANGLER pages deploy placeholder --project-name="$PROJECT" --branch=main --commit-dirty=true
+            exit 1
+          fi
+
+      - name: 保護失效：正式網址改回佔位頁
+        # 只在「保護檢查」失敗時觸發。其他原因（例如 HF 暫時連不上）失敗，不把網站換成佔位頁。
+        if: always() && steps.check.outcome == 'failure' && vars.TWCHIP_SITE_LIVE == 'yes'
+        run: |
+          $WRANGLER pages deploy placeholder --project-name="$PROJECT" --branch=main --commit-dirty=true
+          echo "::error::保護檢查未通過，正式網址已改回佔位頁。請到 Cloudflare Zero Trust 檢查 Access 設定。"

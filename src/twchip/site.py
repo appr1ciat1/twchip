@@ -1,7 +1,11 @@
-"""產生 GitHub Pages 靜態網站：把已驗證的 curated 資料預先算成 JSON，前端只負責顯示。
+"""產生靜態網站：把已驗證的 curated 資料預先算成 JSON，前端只負責顯示。
+
+網站部署在 Cloudflare Pages，前面由 Cloudflare Access 保護，只有指定的帳號登入後才看得到
+（docs/DESIGN.md §12）。部署流程會先確認保護生效，才上傳資料。
 
 輸出結構（相對於 out_dir）：
   index.html, app.js, style.css
+  _headers, robots.txt    要求搜尋引擎不要收錄（輔助措施，真正的保護是 Access）
   data/meta.json          最新日、交易日清單、視窗、建置時間
   data/stocks.json        代號、名稱、市場（搜尋用）
   data/rank_{w}.json      w 日累計三大法人買賣超（張）＋外資持股變化＋區間漲跌
@@ -32,6 +36,33 @@ QUALITY_DAYS = 60
 def _dump(obj, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str), encoding="utf-8")
+
+
+# Cloudflare Pages 的 _headers：全部路徑都不讓搜尋引擎收錄、不帶 referrer。
+HEADERS = """/*
+  X-Robots-Tag: noindex, nofollow, noarchive
+  Referrer-Policy: no-referrer
+  X-Content-Type-Options: nosniff
+"""
+ROBOTS = "User-agent: *\nDisallow: /\n"
+
+
+def _private_files(out: Path) -> None:
+    (out / "_headers").write_text(HEADERS, encoding="utf-8")
+    (out / "robots.txt").write_text(ROBOTS, encoding="utf-8")
+
+
+def placeholder(out: Path) -> None:
+    """不含任何資料的佔位頁。保護尚未確認前，正式網址只會部署這個。"""
+    out = Path(out)
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    (out / "index.html").write_text(
+        '<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"><title>twchip</title></head>'
+        '<body style="font-family:system-ui;margin:2rem">twchip：網站尚未開放。</body></html>\n', encoding="utf-8")
+    _private_files(out)
 
 
 def _num(x, nd=None):
@@ -78,7 +109,7 @@ def build(cfg: Config, out: Path, include_broker: bool = True) -> dict:
     tpl = resources.files("twchip") / "site_template"
     for name in ("index.html", "app.js", "style.css"):
         (out / name).write_bytes((tpl / name).read_bytes())
-    (out / ".nojekyll").write_text("")
+    _private_files(out)
 
     con = duckdb.connect()
     have = _views(con, cur)
